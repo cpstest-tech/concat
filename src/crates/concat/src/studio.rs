@@ -3887,6 +3887,11 @@ impl Studio {
 
     /// Commits a plan that has a lane, and selects what it made.
     pub fn place(&mut self, plan: &DropPlan) {
+        let first_media = self
+            .dragged_selection(&plan.media)
+            .and_then(|ids| ids.first().cloned())
+            .unwrap_or_else(|| plan.media.clone());
+        let frame = self.first_visual_frame(&first_media);
         let Some(track_id) = self.row_track(plan.row).map(|track| track.id.clone()) else {
             return;
         };
@@ -3921,22 +3926,89 @@ impl Studio {
             // A card dragged out of a selection in the bin brings the whole
             // selection, laid end to end from the drop, in the bin's order.
             // Only the dragged card used to land (reported on Reddit).
-            self.apply(Command::AddClipsInSequence {
-                media_ids,
-                track_id: Some(track_id),
-                start: f64::from(plan.start),
-                ripple: true,
-            })
+            self.apply_with_first_frame(
+                frame,
+                Command::AddClipsInSequence {
+                    media_ids,
+                    track_id: Some(track_id),
+                    start: f64::from(plan.start),
+                    ripple: true,
+                },
+            )
         } else {
-            self.apply(Command::AddClip {
-                media_id: plan.media.clone(),
-                track_id,
-                start: f64::from(plan.start),
-                ripple: true,
-            })
+            self.apply_with_first_frame(
+                frame,
+                Command::AddClip {
+                    media_id: plan.media.clone(),
+                    track_id,
+                    start: f64::from(plan.start),
+                    ripple: true,
+                },
+            )
         };
         if let Some(id) = created {
             self.selection = vec![id];
+        }
+    }
+
+    /// A new timeline takes its frame from the first video or still dropped
+    /// onto it, as editors commonly do. Later media keeps the chosen frame.
+    fn first_visual_frame(&self, media_id: &str) -> Option<(String, model::VideoSettings)> {
+        let timeline = self.timeline();
+        if !timeline.clips.is_empty() {
+            return None;
+        }
+        let Some(media) = self.project().media_by_id(media_id) else {
+            return None;
+        };
+        if !matches!(
+            media.kind,
+            model::MediaKind::Video | model::MediaKind::Image
+        ) {
+            return None;
+        }
+        let (Some(width), Some(height)) = (media.width, media.height) else {
+            return None;
+        };
+        if width == 0 || height == 0 {
+            return None;
+        }
+
+        let timeline_id = timeline.id.clone();
+        let current = timeline.video;
+        let (rate_num, rate_den) = media
+            .frame_rate_fraction
+            .as_deref()
+            .and_then(|fraction| {
+                let (num, den) = fraction.split_once('/')?;
+                Some((num.parse().ok()?, den.parse().ok()?))
+            })
+            .filter(|(num, den): &(i64, i64)| *num > 0 && *den > 0)
+            .unwrap_or((current.rate_num, current.rate_den));
+        Some((
+            timeline_id,
+            model::VideoSettings {
+                width,
+                height,
+                rate_num,
+                rate_den,
+                ..current
+            },
+        ))
+    }
+
+    /// Keeps the first dropped picture and the frame it chooses in one undo
+    /// step. The regular command path is unchanged for later clips.
+    fn apply_with_first_frame(
+        &mut self,
+        frame: Option<(String, model::VideoSettings)>,
+        command: Command,
+    ) -> Option<String> {
+        match frame {
+            Some((timeline_id, video)) => self.apply(Command::Batch {
+                commands: vec![Command::SetTimelineVideo { timeline_id, video }, command],
+            }),
+            None => self.apply(command),
         }
     }
 
@@ -9217,14 +9289,24 @@ impl Studio {
                     && playhead < clip.start + clip.duration
             })
             .max_by_key(|clip| -self.row_of(&clip.track_id));
-        editor.set_has_picture(showing.is_some());
-        editor.set_preview_clip_name(
-            showing
-                .map(|clip| clip.name.as_str())
-                .unwrap_or_default()
-                .into(),
-        );
-        editor.set_preview_duration(self.duration());
+        if let Some(source) = self.source.as_ref() {
+            let has_picture = matches!(
+                source.kind,
+                model::MediaKind::Video | model::MediaKind::Image
+            ) && source.time < source.duration;
+            editor.set_has_picture(has_picture);
+            editor.set_preview_clip_name(source.name.as_str().into());
+            editor.set_preview_duration(source.duration as f32);
+        } else {
+            editor.set_has_picture(showing.is_some());
+            editor.set_preview_clip_name(
+                showing
+                    .map(|clip| clip.name.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            editor.set_preview_duration(self.duration());
+        }
         editor.set_playhead_free(!self.prefs.playhead_stops_at_end);
         editor.set_playing(self.playing);
         self.publish_frame(app);

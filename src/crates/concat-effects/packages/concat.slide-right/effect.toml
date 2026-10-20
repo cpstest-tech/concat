@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.slide-right"
+name = "Slide Right"
+kind = "transition"
+category = "Slide"
+order = 1
+description = "Both shots move right together across the cut."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "slideright"
+fallback = "cross-fade"

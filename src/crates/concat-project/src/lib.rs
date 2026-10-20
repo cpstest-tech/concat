@@ -50,6 +50,18 @@ mod tests {
         AudioTrack, ClipKind, MediaItem, MediaKind, MediaOrigin, Project, TextStyle,
     };
 
+    /// Multi-lane fixtures keep the pre-existing command tests independent
+    /// of the one-lane default used for a newly created project.
+    fn four_lane_editor() -> Editor {
+        let mut editor = Editor::new();
+        for _ in 1..4 {
+            editor
+                .apply(Command::AddTrack { bottom: false })
+                .expect("adds a lane");
+        }
+        editor
+    }
+
     fn media(path: &str, duration: f64, has_audio: bool) -> Command {
         Command::AddMedia {
             item: crate::commands::NewMedia {
@@ -360,7 +372,7 @@ mod tests {
     #[test]
     fn the_background_belongs_to_the_lowest_picture_lane() {
         use crate::model::Background;
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let video = editor
             .apply(media("/a.mp4", 10.0, true))
             .expect("adds")
@@ -568,7 +580,7 @@ mod tests {
 
     /// Editor with one media item and one clip at [0, 10) on track one.
     fn fixture() -> (Editor, String, String) {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let media_id = editor
             .apply(media("/a.mp4", 10.0, true))
             .expect("adds")
@@ -1257,10 +1269,10 @@ mod tests {
     }
 
     #[test]
-    fn a_new_project_has_one_timeline_and_four_lanes() {
+    fn a_new_project_has_one_timeline_and_one_lane() {
         let editor = Editor::new();
         assert_eq!(editor.project().timelines.len(), 1);
-        assert_eq!(editor.project().active().tracks.len(), 4);
+        assert_eq!(editor.project().active().tracks.len(), 1);
     }
 
     #[test]
@@ -1505,7 +1517,7 @@ mod tests {
 
     #[test]
     fn duplicate_media_paths_are_ignored() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         editor.apply(media("/a.mp4", 10.0, true)).expect("adds");
         editor.apply(media("/a.mp4", 10.0, true)).expect("no-op");
         assert_eq!(editor.project().media.len(), 1);
@@ -1514,7 +1526,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_path_spelled_another_way_is_not_imported_twice_on_windows() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         editor
             .apply(media(r"C:\Videos\a.mp4", 10.0, true))
             .expect("adds");
@@ -2891,6 +2903,14 @@ mod tests {
         assert_eq!(sound.kind, ClipKind::Audio);
         assert_eq!(sound.detached_from.as_deref(), Some(clip_id.as_str()));
         assert_eq!(timeline.clip(&clip_id).expect("exists").muted, Some(true));
+        assert!(
+            timeline.tracks.iter().position(|track| track.id == sound.track_id)
+                < timeline
+                    .tracks
+                    .iter()
+                    .position(|track| track.id == timeline.clip(&clip_id).expect("exists").track_id),
+            "detached audio is below its video"
+        );
 
         editor
             .apply(Command::ReattachAudio { clip_id: sound_id })
@@ -2905,7 +2925,7 @@ mod tests {
     /// takes both back. A clip's chosen track survives the document.
     #[test]
     fn detaching_a_two_track_recording_gives_one_sound_clip_per_track() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let media_id = editor
             .apply(two_track_media("/rec.mkv"))
             .expect("adds")
@@ -3020,7 +3040,7 @@ mod tests {
 
     #[test]
     fn timelines_add_switch_and_delete_with_a_floor_of_one() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let second = editor
             .apply(Command::AddTimeline)
             .expect("adds")
@@ -3056,7 +3076,7 @@ mod tests {
 
     #[test]
     fn a_timeline_moves_to_a_new_slot_without_stealing_the_selection() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let second = editor
             .apply(Command::AddTimeline)
             .expect("adds")
@@ -3759,7 +3779,7 @@ mod tests {
 
     #[test]
     fn a_medias_origin_round_trips_and_an_unknown_one_reads_as_an_import() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let Command::AddMedia { mut item } = media("/voice.wav", 3.0, true) else {
             unreachable!()
         };
@@ -3816,7 +3836,7 @@ mod tests {
 
     #[test]
     fn text_clips_survive_without_media_and_carry_their_words() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let clip_id = editor
             .apply(Command::AddTextClip {
                 above: false,
@@ -3860,7 +3880,7 @@ mod tests {
 
     #[test]
     fn a_caption_lands_above_the_highest_occupied_lane() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let media_id = editor
             .apply(media("/a.mp4", 10.0, true))
             .expect("adds")
@@ -3913,7 +3933,7 @@ mod tests {
     /// layer under the picture would treat nothing (#249).
     #[test]
     fn an_adjustment_layer_lands_above_the_picture() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let media_id = editor
             .apply(media("/a.mp4", 10.0, true))
             .expect("adds")
@@ -3955,7 +3975,7 @@ mod tests {
 
     #[test]
     fn a_caption_on_an_empty_timeline_lands_on_the_bottom_lane() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let caption_id = editor
             .apply(Command::AddTextClip {
                 track_id: None,
@@ -3986,7 +4006,7 @@ mod tests {
 
     #[test]
     fn a_plain_title_still_lands_on_the_first_free_lane_from_the_bottom() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let media_id = editor
             .apply(media("/a.mp4", 10.0, true))
             .expect("adds")
@@ -4032,7 +4052,7 @@ mod tests {
 
     #[test]
     fn a_caption_mints_a_new_lane_when_every_lane_above_is_taken() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let media_id = editor
             .apply(media("/a.mp4", 10.0, true))
             .expect("adds")
@@ -4578,7 +4598,7 @@ mod tests {
 
     #[test]
     fn removing_a_timeline_moves_the_active_tab_to_a_neighbour() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let second = editor
             .apply(Command::AddTimeline)
             .expect("adds")
@@ -4634,7 +4654,7 @@ mod tests {
 
     #[test]
     fn fonts_deduplicate_by_path_and_removal_leaves_titles_alone() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         editor
             .apply(Command::AddFont {
                 family: "Inter".to_owned(),
@@ -5046,7 +5066,7 @@ mod tests {
     #[test]
     fn shape_clips_survive_without_media_and_carry_their_figure() {
         use crate::model::{ClipKind, ShapeKind, ShapeStyle};
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let clip_id = editor
             .apply(Command::AddShapeClip {
                 above: true,
@@ -5110,7 +5130,7 @@ mod tests {
     /// animation is taken off without being named.
     #[test]
     fn retired_clip_fields_are_dropped_and_named() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         for (index, name) in ["Backwards", "Bouncy", "Plain"].into_iter().enumerate() {
             editor
                 .apply(Command::AddLayerClip {
@@ -5155,7 +5175,7 @@ mod tests {
     /// old shape, with no `bottom`, still means the top.
     #[test]
     fn a_track_goes_on_top_or_underneath() {
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         let before = editor.project().active().tracks.len();
         let top = editor
             .apply(Command::AddTrack { bottom: false })
@@ -5202,7 +5222,7 @@ mod tests {
             origin: None,
             color_space: Default::default(),
         };
-        let mut editor = Editor::new();
+        let mut editor = four_lane_editor();
         editor
             .apply(Command::AddMedia {
                 item: item("/a.mp4"),

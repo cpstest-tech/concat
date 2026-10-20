@@ -1607,6 +1607,7 @@ component WideHome inherits Rectangle {
     in property <bool> can-drop;
 
     callback compose();
+    callback create();
     callback open();
     callback open-recent(path: string);
     callback forget-recent(path: string);
@@ -1693,7 +1694,7 @@ component WideHome inherits Rectangle {
                         title: I18n.t("start.newProject");
                         note: I18n.t("start.newProjectNote");
                         enabled: !root.busy;
-                        clicked => { root.compose(); }
+                        clicked => { root.create(); }
                     }
 
                     CreateTile {
@@ -1877,6 +1878,7 @@ component NarrowHome inherits Rectangle {
     in property <bool> phone;
 
     callback compose();
+    callback create();
     callback open();
     callback open-settings();
     callback open-recent(path: string);
@@ -1962,7 +1964,7 @@ component NarrowHome inherits Rectangle {
                 title: I18n.t("start.newProject");
                 note: I18n.t("start.newProjectNote");
                 enabled: !root.busy;
-                clicked => { root.compose(); }
+                clicked => { root.create(); }
             }
 
             Rectangle { height: 32px; }
@@ -2070,6 +2072,8 @@ export component StartScreen inherits Rectangle {
 
     /// Put up the sheet a new project is described on.
     callback compose();
+    /// Make a project with the defaults and open it.
+    callback create();
     /// Open a project that already exists, picked from disk.
     callback open();
     callback open-recent(path: string);
@@ -2097,6 +2101,7 @@ export component StartScreen inherits Rectangle {
         version: root.version;
         can-drop: root.can-drop;
         compose => { root.compose(); }
+        create => { root.create(); }
         open => { root.open(); }
         open-recent(path) => { root.open-recent(path); }
         forget-recent(path) => { root.forget-recent(path); }
@@ -2116,6 +2121,7 @@ export component StartScreen inherits Rectangle {
         version: root.version;
         phone: root.phone;
         compose => { root.compose(); }
+        create => { root.create(); }
         open => { root.open(); }
         open-settings => { root.open-settings(); }
         open-recent(path) => { root.open-recent(path); }

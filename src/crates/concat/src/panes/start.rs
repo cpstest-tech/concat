@@ -393,7 +393,7 @@ impl StartPane {
     /// the reason in its notice.
     fn create(&mut self, studio: &mut Studio) {
         let name = self.name.trim().to_owned();
-        let name = if name.is_empty() {
+        let name = if is_untitled(&name) {
             self.free_untitled()
         } else {
             name

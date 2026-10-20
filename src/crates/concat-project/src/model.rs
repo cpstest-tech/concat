@@ -212,8 +212,8 @@ fn is_false(value: &bool) -> bool {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Track {
-    /// Minted per timeline ("t5", or "T1".."T4" for the first timeline's
-    /// starter lanes); never shared between timelines.
+    /// Minted per timeline ("T1" for the first lane, "t1" and on for
+    /// later lanes); never shared between timelines.
     pub id: String,
     /// Video clips on this track are left out of the composite when false.
     pub visible: bool,
@@ -2630,7 +2630,7 @@ pub struct MissingMedia {
 }
 
 impl Project {
-    /// A new project: one timeline, four lanes, at the default frame.
+    /// A new project: one timeline, one lane, at the default frame.
     pub fn new() -> Self {
         Self::with_video(VideoSettings::default())
     }
@@ -2647,12 +2647,10 @@ impl Project {
                 name: "Timeline 1".to_owned(),
                 video,
                 background: Background::None,
-                tracks: (1..=4)
-                    .map(|number| Track {
-                        id: format!("T{number}"),
-                        ..Track::default()
-                    })
-                    .collect(),
+                tracks: vec![Track {
+                    id: "T1".to_owned(),
+                    ..Track::default()
+                }],
                 clips: Vec::new(),
                 extra: Map::new(),
             })],

@@ -58,27 +58,36 @@ pub(super) fn apply(
             let clip = timeline.clip(&clip_id).expect("checked above").clone();
             let mut first_sound = None;
             for (stream, name) in sounds {
-                // A lane free for the whole span, or a fresh one. Each sound
-                // placed takes its lane, so the next looks past it.
+                // Reuse a free audio-only lane, or make one at the bottom
+                // of the timeline. Visual lanes stay above detached sound.
+                // Each sound placed takes its lane, so the next looks past it.
                 let track_id = {
                     let end = clip.start + clip.duration;
                     let free = timeline.tracks.iter().find(|track| {
-                        !timeline.clips.iter().any(|other| {
-                            other.track_id == track.id
-                                && other.start < end
-                                && clip.start < other.start + other.duration
-                        })
+                        let on_track: Vec<_> = timeline
+                            .clips
+                            .iter()
+                            .filter(|other| other.track_id == track.id)
+                            .collect();
+                        !on_track.is_empty()
+                            && on_track.iter().all(|other| other.kind == ClipKind::Audio)
+                            && on_track.iter().all(|other| {
+                                other.start >= end || clip.start >= other.start + other.duration
+                            })
                     });
                     match free {
                         Some(track) => track.id.clone(),
                         None => {
                             let id = mint.next("t");
-                            timeline.tracks.push(Track {
-                                id: id.clone(),
-                                visible: true,
-                                muted: false,
-                                extra: Default::default(),
-                            });
+                            timeline.tracks.insert(
+                                0,
+                                Track {
+                                    id: id.clone(),
+                                    visible: true,
+                                    muted: false,
+                                    extra: Default::default(),
+                                },
+                            );
                             id
                         }
                     }

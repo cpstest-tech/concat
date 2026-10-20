@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.slide-up"
+name = "Slide Up"
+kind = "transition"
+category = "Slide"
+order = 2
+description = "Both shots move up together across the cut."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "slideup"
+fallback = "cross-fade"

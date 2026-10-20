@@ -598,6 +598,7 @@ export component App inherits Window {
                 can-drop: root.can-drop;
 
                 compose => { root.start-compose(); }
+                create => { root.start-create(); }
                 open => { root.start-open(); }
                 open-settings => { root.open-settings(); }
                 open-recent(path) => { root.start-open-recent(path); }

@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.slide-left"
+name = "Slide Left"
+kind = "transition"
+category = "Slide"
+order = 0
+description = "Both shots move left together across the cut."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "slideleft"
+fallback = "cross-fade"
