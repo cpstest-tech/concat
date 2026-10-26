@@ -1,0 +1,55 @@
+format = 2
+
+[effect]
+id = "concat.word-reveal"
+name = "Word Reveal"
+version = 1
+kind = "effect"
+category = "Text"
+order = 1
+description = "Reveals a title one laid-out word at a time."
+
+[[param]]
+key = "duration"
+label = "Duration"
+min = 0.05
+max = 5
+default = 0.5
+step = 0.05
+unit = "s"
+
+[[param]]
+key = "start"
+label = "Start"
+min = 0
+max = 36000
+default = 0
+step = 0.01
+unit = "s"
+
+[[param]]
+key = "steps"
+label = "Steps"
+min = 1
+max = 1000
+default = 1
+step = 1
+
+[[param]]
+key = "snap"
+label = "Snap to graphemes"
+min = 0
+max = 1
+default = 0
+step = 1
+
+[[param]]
+key = "reverse"
+label = "Reverse"
+min = 0
+max = 1
+default = 0
+step = 1
+
+[wgsl]
+entry = "effect.wgsl"

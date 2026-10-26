@@ -153,6 +153,7 @@ export global Editor {
     /// fresh model on every publish, and every panel would re-seed for it.
     in-out property <[string]> audio-tracks;
     callback clip-set(field: ClipField, value: float);
+    callback clip-animation-set(slot: int, id: string, duration: float);
     callback clip-set-text(field: ClipTextField, value: string);
     callback clip-set-colour(field: ClipTextField, value: color);
     callback clip-commit();

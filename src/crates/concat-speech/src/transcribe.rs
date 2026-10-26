@@ -280,6 +280,10 @@ pub struct TranscribeRequest {
     pub window: f64,
     /// Which model to use, e.g. "base.en".
     pub model_id: String,
+    /// Ask Whisper for experimental token-level timestamps, for the
+    /// word-at-a-time caption template.
+    #[serde(default)]
+    pub word_timestamps: bool,
 }
 
 struct LoadedModel {
@@ -495,6 +499,12 @@ impl Transcriber {
         params.set_print_realtime(false);
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
+        if request.word_timestamps {
+            // Token timestamps are experimental in whisper.cpp. We only
+            // request them for the word-at-a-time template to keep the
+            // ordinary phrase caption path unchanged.
+            params.set_token_timestamps(true);
+        }
         // The raw hooks, not `set_abort_callback_safe`. whisper-rs 0.16's
         // safe one hands whisper a pointer to a boxed trait object with a
         // trampoline typed for the closure itself, so whisper reads the
@@ -537,16 +547,33 @@ impl Transcriber {
             return Err("transcription cancelled".to_owned());
         }
 
-        Ok(state
-            .as_iter()
-            .filter_map(|segment| {
-                // Whisper's timestamps are centiseconds.
-                let start = segment.start_timestamp() as f64 / 100.0;
-                let end = segment.end_timestamp() as f64 / 100.0;
-                let text = segment.to_str_lossy().ok()?.trim().to_owned();
-                keep_segment(start, end, text)
-            })
-            .collect())
+        let mut captions = Vec::new();
+        for segment in state.as_iter() {
+            // Whisper's timestamps are centiseconds.
+            let start = segment.start_timestamp() as f64 / 100.0;
+            let end = segment.end_timestamp() as f64 / 100.0;
+            let Ok(text) = segment.to_str_lossy() else { continue };
+            let text = text.trim().to_owned();
+            if request.word_timestamps {
+                let tokens = (0..segment.n_tokens()).filter_map(|index| {
+                    let token = segment.get_token(index)?;
+                    let text = token.to_str_lossy().ok()?.into_owned();
+                    let timing = token.token_data();
+                    Some((text, timing.t0 as f64 / 100.0, timing.t1 as f64 / 100.0))
+                });
+                let words = word_segments(tokens);
+                if words.is_empty() {
+                    if let Some(whole_segment) = keep_segment(start, end, text) {
+                        captions.push(whole_segment);
+                    }
+                } else {
+                    captions.extend(words);
+                }
+            } else if let Some(caption) = keep_segment(start, end, text) {
+                captions.push(caption);
+            }
+        }
+        Ok(captions)
     }
 
     /// Asks the running transcription to stop at its next check.
@@ -568,6 +595,74 @@ fn keep_segment(start: f64, end: f64, text: String) -> Option<Segment> {
         return None;
     }
     (end > start).then_some(Segment { start, end, text })
+}
+
+/// Joins Whisper's timed subword tokens into words. A leading space in a
+/// token marks a word boundary; punctuation and subword pieces stay with
+/// the current word. Token timestamps are centiseconds relative to the
+/// transcribed audio window.
+fn word_segments(tokens: impl IntoIterator<Item = (String, f64, f64)>) -> Vec<Segment> {
+    let mut words = Vec::new();
+    let mut text = String::new();
+    let mut start: Option<f64> = None;
+    let mut end = 0.0_f64;
+
+    let flush = |words: &mut Vec<Segment>,
+                 text: &mut String,
+                 start: &mut Option<f64>,
+                 end: &mut f64| {
+        let word = std::mem::take(text);
+        if let Some(word_start) = start.take() {
+            if let Some(word) = keep_segment(word_start, *end, word) {
+                words.push(word);
+            }
+        }
+        *end = 0.0;
+    };
+
+    for (token, token_start, token_end) in tokens {
+        if !token_start.is_finite() || !token_end.is_finite() || token_end <= token_start {
+            continue;
+        }
+        let token = token.trim_end_matches(char::is_whitespace);
+        if token.is_empty() || (token.starts_with("<|") && token.ends_with("|>")) {
+            continue;
+        }
+        let has_leading_space = token.chars().next().is_some_and(char::is_whitespace);
+        if has_leading_space && !text.is_empty() {
+            flush(&mut words, &mut text, &mut start, &mut end);
+        }
+
+        let pieces: Vec<&str> = token.split_whitespace().collect();
+        if pieces.len() > 1 {
+            if !text.is_empty() {
+                flush(&mut words, &mut text, &mut start, &mut end);
+            }
+            let total_chars: usize = pieces
+                .iter()
+                .map(|piece| piece.chars().count().max(1))
+                .sum();
+            let mut at = token_start;
+            for piece in pieces {
+                let span = (token_end - token_start).max(0.0)
+                    * piece.chars().count().max(1) as f64 / total_chars as f64;
+                if let Some(word) = keep_segment(at, at + span, piece.to_owned()) {
+                    words.push(word);
+                }
+                at += span;
+            }
+            continue;
+        }
+
+        let Some(piece) = pieces.first() else { continue };
+        if start.is_none() {
+            start = Some(token_start);
+        }
+        text.push_str(piece);
+        end = token_end.max(end);
+    }
+    flush(&mut words, &mut text, &mut start, &mut end);
+    words
 }
 
 #[cfg(test)]
@@ -637,6 +732,7 @@ mod real_audio {
             source_start: 0.0,
             window: 30.0,
             model_id: "tiny.en".to_owned(),
+            word_timestamps: false,
         };
         let segments = transcriber
             .transcribe(&dirs, &request, |stage| eprintln!("{stage:?}"))

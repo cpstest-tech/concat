@@ -151,6 +151,10 @@ pub struct ClipPatch {
     )]
     #[cfg_attr(feature = "schema", schemars(with = "Option<Transition>"))]
     pub transition_in: Option<Option<Transition>>,
+    /// The three motion preset slots. Null clears all selected animations.
+    #[serde(default, with = "double_option", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schemars(with = "Option<crate::model::ClipAnimations>"))]
+    pub animations: Option<Option<crate::model::ClipAnimations>>,
     /// The title styling, same three-way wire semantics as `transition_in`.
     /// Setting a style also renames the clip after its first line.
     #[serde(

@@ -322,7 +322,7 @@ pub(crate) fn build_timeline(
                 Rational::approximate(audio::clamp_speed(clip.speed)).unwrap_or(Rational::ONE);
             engine_clip.retime = clip.retime();
         }
-        engine_clip.animation = animation_of(&clip.animation);
+        engine_clip.animation = animation_of(clip);
         engine_clip.blend = concat_core::timeline::Blend::parse(&clip.blend);
         engine_clip.mask = clip.mask.map(|mask| mask.engine());
         engine_clip.transform = Transform {
@@ -463,13 +463,13 @@ pub(crate) fn shaded(effects: &[AppliedFilter]) -> Vec<AppliedFilter> {
 }
 
 /// The engine's keys for a flattened clip's animation, or None for none.
-pub(crate) fn animation_of(keys: &[ExportKey]) -> Option<Animation> {
+pub(crate) fn animation_of(clip: &ExportClip) -> Option<Animation> {
     use concat_core::animate::{Ease, Key, Track};
-    if keys.is_empty() {
+    if clip.animation.is_empty() && clip.preset_animations.is_empty() {
         return None;
     }
     let mut tracks: [Vec<Key>; 13] = Default::default();
-    for key in keys {
+    for key in &clip.animation {
         let slot = match key.property.as_str() {
             "scale" => 0,
             "offsetX" => 1,
@@ -524,8 +524,25 @@ pub(crate) fn animation_of(keys: &[ExportKey]) -> Option<Animation> {
             roundness: Track::new(mask_roundness),
             feather: Track::new(mask_feather),
         },
+        presets: preset_set_for(clip),
     };
     (!animation.is_empty()).then_some(animation)
+}
+
+fn preset_set_for(clip: &ExportClip) -> concat_core::animate::PresetSet {
+    use concat_core::animate::{PresetAnimation, PresetId, PresetSet};
+    let make = |value: &concat_project::model::ClipAnimation| {
+        Some(PresetAnimation {
+            id: PresetId::parse(&value.id)?,
+            duration: value.duration,
+            intensity: value.intensity,
+        })
+    };
+    PresetSet {
+        entrance: clip.preset_animations.entrance.as_ref().and_then(make),
+        exit: clip.preset_animations.exit.as_ref().and_then(make),
+        combo: clip.preset_animations.combo.as_ref().and_then(make),
+    }
 }
 
 /// The source's contain-fitted size inside the output frame, or `None` when

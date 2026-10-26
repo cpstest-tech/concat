@@ -250,6 +250,104 @@ pub struct Animation {
     /// addition - since a mask is the clip's own and has no preset to be
     /// relative for.
     pub mask: MaskTracks,
+    /// Declarative clip-level presets, evaluated after hand-authored keys.
+    /// These stay separate so presets never replace a user's key tracks.
+    pub presets: PresetSet,
+}
+
+/// A named motion preset with a duration in seconds and a user-adjustable
+/// intensity. The project document stores the stable string id; the exporter
+/// resolves it to this small renderer vocabulary.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct PresetAnimation {
+    pub id: PresetId,
+    pub duration: f64,
+    pub intensity: f64,
+}
+
+/// The three mutually constrained animation slots on a clip.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct PresetSet {
+    pub entrance: Option<PresetAnimation>,
+    pub exit: Option<PresetAnimation>,
+    pub combo: Option<PresetAnimation>,
+}
+
+/// Built-in motion catalogue. Blur remains omitted until the renderer has a
+/// per-layer blur operation.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PresetId {
+    Fade, SlideLeft, SlideRight, SlideUp, SlideDown, Zoom, Pop, Rotate,
+    ZoomOut, RotateOut, KenBurns, Pulse, Oscillate, Float, Shake,
+}
+
+impl PresetId {
+    pub fn parse(id: &str) -> Option<Self> {
+        Some(match id {
+            "fade-in" | "fade-out" => Self::Fade,
+            "slide-left" => Self::SlideLeft, "slide-right" => Self::SlideRight,
+            "slide-up" => Self::SlideUp, "slide-down" => Self::SlideDown,
+            "zoom-in" => Self::Zoom, "pop" => Self::Pop, "rotate-in" => Self::Rotate,
+            "zoom-out" => Self::ZoomOut, "rotate-out" => Self::RotateOut,
+            "ken-burns" => Self::KenBurns, "pulse" => Self::Pulse,
+            "oscillate" => Self::Oscillate, "float" => Self::Float,
+            "shake" => Self::Shake, _ => return None,
+        })
+    }
+}
+
+/// Offset and multiplier returned by the pure preset evaluator.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct MotionDelta {
+    pub x: f64,
+    pub y: f64,
+    pub scale: f64,
+    pub rotation: f64,
+    pub opacity: f64,
+}
+
+impl Default for MotionDelta {
+    fn default() -> Self {
+        MotionDelta { x: 0.0, y: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0 }
+    }
+}
+
+/// Evaluate a preset at clip-local time. Coordinates are frame fractions,
+/// scale and opacity are multipliers, and rotation is degrees.
+pub fn evaluate_preset(preset: PresetAnimation, local: f64, clip_duration: f64, is_out: bool, is_combo: bool) -> MotionDelta {
+    let d = preset.duration.clamp(0.001, clip_duration.max(0.001));
+    let p = preset.id;
+    let intensity = preset.intensity.max(0.0);
+    if is_combo {
+        let phase = local.max(0.0) / d.max(0.001) * std::f64::consts::TAU;
+        let wave = phase.sin();
+        return match p {
+            PresetId::KenBurns => MotionDelta { scale: 1.0 + 0.12 * intensity * (local / clip_duration.max(0.001)), ..MotionDelta::default() },
+            PresetId::Pulse => MotionDelta { scale: 1.0 + 0.04 * intensity * wave, ..MotionDelta::default() },
+            PresetId::Oscillate => MotionDelta { rotation: 4.0 * intensity * wave, ..MotionDelta::default() },
+            PresetId::Float => MotionDelta { y: 0.025 * intensity * wave, ..MotionDelta::default() },
+            PresetId::Shake => MotionDelta { x: 0.008 * intensity * wave, y: 0.006 * intensity * (phase * 1.37).sin(), rotation: 0.8 * intensity * (phase * 0.83).sin(), ..MotionDelta::default() },
+            _ => MotionDelta::default(),
+        };
+    }
+    let progress = if is_out { (local - (clip_duration - d)) / d } else { local / d }.clamp(0.0, 1.0);
+    // Smoothstep is the shared ease-in-out for the initial library.
+    let t = progress * progress * (3.0 - 2.0 * progress);
+    match p {
+        PresetId::Fade => MotionDelta { opacity: if is_out { 1.0 - t } else { t }, ..MotionDelta::default() },
+        PresetId::SlideLeft | PresetId::SlideRight | PresetId::SlideUp | PresetId::SlideDown => {
+            let sign = if matches!(p, PresetId::SlideLeft | PresetId::SlideUp) { -1.0 } else { 1.0 };
+            let amount = 0.35 * intensity * if is_out { t } else { 1.0 - t } * sign;
+            MotionDelta { x: if matches!(p, PresetId::SlideLeft | PresetId::SlideRight) { amount } else { 0.0 }, y: if matches!(p, PresetId::SlideUp | PresetId::SlideDown) { amount } else { 0.0 }, ..MotionDelta::default() }
+        }
+        PresetId::Zoom | PresetId::Pop => {
+            let bounce = if p == PresetId::Pop { (std::f64::consts::PI * progress).sin() * (1.0 - progress) * 0.16 * intensity } else { 0.0 };
+            MotionDelta { scale: if is_out { 1.0 - 0.35 * intensity * t } else { 1.0 - 0.35 * intensity * (1.0 - t) + bounce }, ..MotionDelta::default() }
+        }
+        PresetId::ZoomOut => MotionDelta { scale: if is_out { 1.0 - 0.35 * intensity * t } else { 1.0 - 0.35 * intensity * (1.0 - t) }, ..MotionDelta::default() },
+        PresetId::Rotate | PresetId::RotateOut => MotionDelta { rotation: if is_out { 12.0 * intensity * t } else { -12.0 * intensity * (1.0 - t) }, ..MotionDelta::default() },
+        _ => MotionDelta::default(),
+    }
 }
 
 /// The keys of a mask's numbers; see [`ShapeMask`] for what each is.
@@ -309,23 +407,54 @@ impl Animation {
             && self.opacity.is_empty()
             && self.volume.is_empty()
             && self.mask.is_empty()
+            && self.presets == PresetSet::default()
     }
 
     /// The clip's transform at `x`, a fraction of its length.
     pub fn transform_at(&self, base: Transform, x: f64) -> Transform {
-        Transform {
+        self.transform_at_duration(base, x, 1.0)
+    }
+
+    pub fn transform_at_duration(&self, base: Transform, x: f64, duration: f64) -> Transform {
+        let mut transform = Transform {
             scale: (base.scale * self.scale.value_at(x, 1.0)).max(0.001),
             offset_x: base.offset_x + self.offset_x.value_at(x, 0.0),
             offset_y: base.offset_y + self.offset_y.value_at(x, 0.0),
             rotation: base.rotation + self.rotation.value_at(x, 0.0),
             stretch_x: base.stretch_x,
             stretch_y: base.stretch_y,
+        };
+        let local = x.clamp(0.0, 1.0);
+        for (preset, out, combo) in [
+            (self.presets.entrance, false, false),
+            (self.presets.exit, true, false),
+            (self.presets.combo, false, true),
+        ] {
+            if let Some(preset) = preset {
+                let delta = evaluate_preset(preset, local * duration, duration, out, combo);
+                transform.offset_x += delta.x;
+                transform.offset_y += delta.y;
+                transform.scale = (transform.scale * delta.scale).max(0.001);
+                transform.rotation += delta.rotation;
+            }
         }
+        transform
     }
 
     /// The clip's opacity at `x`.
     pub fn opacity_at(&self, base: f32, x: f64) -> f32 {
-        (f64::from(base) * self.opacity.value_at(x, 1.0)).clamp(0.0, 1.0) as f32
+        self.opacity_at_duration(base, x, 1.0)
+    }
+
+    pub fn opacity_at_duration(&self, base: f32, x: f64, duration: f64) -> f32 {
+        let mut opacity = f64::from(base) * self.opacity.value_at(x, 1.0);
+        if let Some(preset) = self.presets.entrance {
+            opacity *= evaluate_preset(preset, x * duration, duration, false, false).opacity;
+        }
+        if let Some(preset) = self.presets.exit {
+            opacity *= evaluate_preset(preset, x * duration, duration, true, false).opacity;
+        }
+        opacity.clamp(0.0, 1.0) as f32
     }
 
     /// The clip's gain at `x`. Unclamped at the top: a key above unity is a

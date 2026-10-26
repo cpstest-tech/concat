@@ -68,6 +68,8 @@ struct Art {
     /// The title's per-word reveal order, baked once here rather than on
     /// every clip build - see `concat_core::RevealMap`.
     reveal: Arc<RevealMap>,
+    /// The same map with each word divided into Unicode grapheme boxes.
+    reveal_characters: Arc<RevealMap>,
 }
 
 /// The title painter and its cache.
@@ -269,10 +271,38 @@ impl Titles {
                     muted: true,
                     volume: 0.0,
                     animation: concat_export::flatten::export_keys(clip),
+                    // Text is rasterized to a transparent image here, then
+                    // follows the same frame-local preset evaluator as media.
+                    preset_animations: clip.animations.clone(),
                     flip_h: clip.flip_h,
                     flip_v: clip.flip_v,
                     blend: clip.blend.clone(),
-                    effects: clip.video_effects.clone(),
+                    effects: {
+                        let mut effects = clip.video_effects.clone();
+                        let entrance = clip.animations.entrance.as_ref()
+                            .filter(|animation| matches!(animation.id.as_str(), "word-reveal" | "character-reveal" | "typewriter"))
+                            .map(|animation| (animation, 0.0, false));
+                        let exit = clip.animations.exit.as_ref()
+                            .filter(|animation| matches!(animation.id.as_str(), "word-exit" | "character-exit" | "typewriter-reverse"))
+                            .map(|animation| (animation, (clip.duration - animation.duration).max(0.0), true));
+                        for (animation, start, is_exit) in [entrance, exit].into_iter().flatten() {
+                            let mut reveal = concat_project::model::AppliedFilter::new("concat.word-reveal");
+                            reveal.params.insert("duration".into(), animation.duration);
+                            reveal.params.insert("start".into(), start);
+                            reveal.params.insert("snap".into(), if matches!(animation.id.as_str(), "typewriter" | "typewriter-reverse") { 1.0 } else { 0.0 });
+                            reveal.params.insert("steps".into(), f64::from(reveal_character_count(style_text(painting)).max(1) as u32));
+                            reveal.params.insert("reverse".into(), if is_exit { 1.0 } else { 0.0 });
+                            effects.push(reveal);
+                        }
+                        if let Some(animation) = clip.animations.combo.as_ref()
+                            .filter(|animation| animation.id == "wave-loop")
+                        {
+                            let mut wave = concat_project::model::AppliedFilter::new("concat.text-wave");
+                            wave.params.insert("speed".into(), 1.0 / animation.duration.max(0.05));
+                            effects.push(wave);
+                        }
+                        effects
+                    },
                     scale: clip.scale,
                     offset_x: clip.offset_x,
                     offset_y: clip.offset_y,
@@ -304,7 +334,18 @@ impl Titles {
                     has_audio: Some(false),
                     // A shape has no words to reveal one at a time.
                     reveal_map: match painting {
-                        Painting::Title(_) => Some(Arc::clone(&art.reveal)),
+                        Painting::Title(_) => {
+                            let character_reveal = clip.animations.entrance.as_ref().is_some_and(
+                                |animation| matches!(animation.id.as_str(), "character-reveal" | "typewriter"),
+                            ) || clip.animations.exit.as_ref().is_some_and(
+                                |animation| matches!(animation.id.as_str(), "character-exit" | "typewriter-reverse"),
+                            );
+                            Some(Arc::clone(if character_reveal {
+                                &art.reveal_characters
+                            } else {
+                                &art.reveal
+                            }))
+                        }
                         Painting::Shape(_) => None,
                     },
                     ..ExportClip::blank(ClipKind::Image, clip.start, clip.duration, index)
@@ -348,6 +389,7 @@ impl Titles {
             block: (rendered.block_width, rendered.block_height),
             offset: (rendered.block_dx, rendered.block_dy),
             reveal: reveal_of(&rendered.words, width, height),
+            reveal_characters: character_reveal_of(style_text(painting), &rendered.words, width, height),
         };
         let frame = Arc::new(
             Frame::from_rgba(rendered.width, rendered.height, rendered.rgba)
@@ -387,7 +429,7 @@ impl Titles {
         // block was and where, and which words it held, which the PNG
         // alone cannot.
         if png.is_file()
-            && let Some(art) = read_block(&side, width, height)
+            && let Some(art) = read_block(&side, style_text(painting), width, height)
         {
             self.remember(key, art.clone());
             return Ok((png, art));
@@ -410,6 +452,7 @@ impl Titles {
             block: (rendered.block_width, rendered.block_height),
             offset: (rendered.block_dx, rendered.block_dy),
             reveal: reveal_of(&rendered.words, width, height),
+            reveal_characters: character_reveal_of(style_text(painting), &rendered.words, width, height),
         };
         let words: Vec<String> = rendered
             .words
@@ -483,9 +526,8 @@ fn key_of(project: &Project, painting: Painting<'_>, width: u32, height: u32) ->
     }
     // Bumped when the painter's output changes for the same input, so stale
     // files are not mistaken for current ones. 3: left- and right-aligned
-    // blocks moved to their anchors. 4: the sidecar gained each word's box,
-    // for a per-word reveal effect to read back.
-    bytes.extend_from_slice(&4u32.to_le_bytes());
+    // blocks moved to their anchors. 5: grapheme reveal maps were added.
+    bytes.extend_from_slice(&5u32.to_le_bytes());
     crate::media::fnv1a(&bytes)
 }
 
@@ -519,9 +561,9 @@ fn sweep(dir: &Path, keep: usize) {
     }
 }
 
-fn read_block(side: &Path, width: u32, height: u32) -> Option<Art> {
-    let text = std::fs::read_to_string(side).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+fn read_block(side: &Path, text: &str, width: u32, height: u32) -> Option<Art> {
+    let sidecar = std::fs::read_to_string(side).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&sidecar).ok()?;
     let offset = |name: &str| value.get(name).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
     let rects: Vec<(i32, i32, u32, u32)> = value
         .get("words")
@@ -545,6 +587,7 @@ fn read_block(side: &Path, width: u32, height: u32) -> Option<Art> {
         ),
         offset: (offset("x"), offset("y")),
         reveal: Arc::new(RevealMap::from_rects(width, height, &rects)),
+        reveal_characters: character_reveal_of(text, &rects.iter().map(|&(x, y, width, height)| WordRect { x, y, width, height }).collect::<Vec<_>>(), width, height),
     })
 }
 
@@ -555,6 +598,44 @@ fn reveal_of(words: &[WordRect], width: u32, height: u32) -> Arc<RevealMap> {
         .iter()
         .map(|w| (w.x, w.y, w.width, w.height))
         .collect();
+    Arc::new(RevealMap::from_rects(width, height, &rects))
+}
+
+/// The visible text used to make one character box per Unicode grapheme.
+fn style_text(painting: Painting<'_>) -> &str {
+    match painting {
+        Painting::Title(style) => &style.content,
+        Painting::Shape(_) => "",
+    }
+}
+
+fn grapheme_count(text: &str) -> usize {
+    use unicode_segmentation::UnicodeSegmentation;
+    text.graphemes(true).count()
+}
+
+fn reveal_character_count(text: &str) -> usize {
+    text.split_whitespace().map(grapheme_count).sum()
+}
+
+/// A stable per-grapheme reveal map over the title's already-laid-out word
+/// boxes. Equal subdivisions preserve the original raster and wrapping;
+/// segmentation keeps combining accents and joined emoji together.
+fn character_reveal_of(text: &str, words: &[WordRect], width: u32, height: u32) -> Arc<RevealMap> {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    let mut rects = Vec::new();
+    for (word, bounds) in text.split_whitespace().zip(words.iter()) {
+        let count = word.graphemes(true).count().max(1);
+        for index in 0..count {
+            let x0 = bounds.x + (bounds.width as usize * index / count) as i32;
+            let x1 = bounds.x + (bounds.width as usize * (index + 1) / count) as i32;
+            rects.push((x0, bounds.y, (x1 - x0).max(1) as u32, bounds.height));
+        }
+    }
+    if rects.is_empty() {
+        return reveal_of(words, width, height);
+    }
     Arc::new(RevealMap::from_rects(width, height, &rects))
 }
 
@@ -805,6 +886,7 @@ mod tests {
             block: (1, 1),
             offset: (0, 0),
             reveal: Arc::new(RevealMap::from_rects(1, 1, &[])),
+            reveal_characters: Arc::new(RevealMap::from_rects(1, 1, &[])),
         };
         let frame = || Arc::new(Frame::transparent(4, 4));
         let size = frame().pixels().len();

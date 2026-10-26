@@ -30,6 +30,22 @@ import { Switch } from "../inspector/controls.slint";
 // a transcription goes on, and opened again the card shows it. On a phone
 // it is a sheet.
 
+export struct CaptionRowData { id: string, text: string, start: float, end: float }
+
+component CaptionEditorRow inherits HorizontalLayout {
+    in property <CaptionRowData> data;
+    callback edited(id: string, text: string, start: string, end: string);
+    property <bool> typing;
+    property <string> draft-text: root.data.text;
+    property <string> draft-start: "\{root.data.start}";
+    property <string> draft-end: "\{root.data.end}";
+    changed data => { if (!root.typing) { root.draft-text = root.data.text; root.draft-start = "\{root.data.start}"; root.draft-end = "\{root.data.end}"; } }
+    spacing: 6px;
+    TextInput { width: 45px; text <=> root.draft-start; accepted => { root.edited(root.data.id, root.draft-text, root.draft-start, root.draft-end); } changed has-focus => { root.typing = self.has-focus; } }
+    TextInput { width: 45px; text <=> root.draft-end; accepted => { root.edited(root.data.id, root.draft-text, root.draft-start, root.draft-end); } changed has-focus => { root.typing = self.has-focus; } }
+    TextInput { horizontal-stretch: 1; text <=> root.draft-text; accepted => { root.edited(root.data.id, root.draft-text, root.draft-start, root.draft-end); } changed has-focus => { root.typing = self.has-focus; } }
+}
+
 export struct CaptionsSheetData {
     open: bool,
     /// "Use Sample Voice": the words come from a clip's sound.
@@ -45,6 +61,8 @@ export struct CaptionsSheetData {
     placement: int,
     /// 0 Small, 1 Medium, 2 Large
     size: int,
+    /// 0 sentence captions, 1 word at a time.
+    template: int,
     running: bool,
     /// 0..1: where the transcription surely is.
     progress: float,
@@ -61,6 +79,8 @@ export struct CaptionsSheetData {
     ready: bool,
     /// Why the last run failed, when it did.
     message: string,
+    editor-open: bool,
+    rows: [CaptionRowData],
 }
 
 export component CaptionsDialog inherits Modal {
@@ -74,18 +94,23 @@ export component CaptionsDialog inherits Modal {
     callback model-changed(index: int);
     callback placement-changed(index: int);
     callback size-changed(index: int);
+    callback template-changed(index: int);
     callback begin();
     callback cancel();
     callback import-srt();
     callback export-srt();
+    callback edit-row(id: string, text: string, start: string, end: string);
+    callback editor-closed();
+    callback edit-captions();
 
     property <bool> from-voice: root.data.from-voice;
 
-    open: root.data.open;
+    open: root.data.open || root.data.editor-open;
     title: I18n.t("captions.captions");
     glyph: Glyph.text-mark;
     surface-width: 480px;
     dismissable: !root.data.running;
+    surface-height: root.data.editor-open ? 680px : 0px;
 
     // The script being typed, held apart from `data.text` the way the Field
     // primitive holds its draft: a TextInput's binding is dropped on the
@@ -103,6 +128,16 @@ export component CaptionsDialog inherits Modal {
     init => { root.draft = root.data.text; }
 
     VerticalLayout {
+        if root.data.editor-open: DialogSection {
+            first: true;
+            title: I18n.t("captions.captions");
+            for row[index] in root.data.rows: CaptionEditorRow {
+                data: row;
+                edited(id, text, start, end) => { root.edit-row(id, text, start, end); }
+            }
+            Button { label: I18n.t("common.close"); primary: true; clicked => { root.editor-closed(); } }
+        }
+        if !root.data.editor-open: VerticalLayout {
         if !root.data.running && !root.from-voice: DialogSection {
             first: true;
             title: I18n.t("common.script");
@@ -218,6 +253,15 @@ export component CaptionsDialog inherits Modal {
 
         if !root.data.running: DialogSection {
             title: I18n.t("captions.captions");
+
+            DialogRow {
+                label: I18n.t("captions.template");
+                SegmentedControl {
+                    options: [I18n.t("captions.templateSentence"), I18n.t("captions.templateWord")];
+                    current: root.data.template;
+                    changed(index) => { root.template-changed(index); }
+                }
+            }
 
             DialogRow {
                 label: I18n.t("captions.placement");
@@ -357,6 +401,15 @@ export component CaptionsDialog inherits Modal {
                     horizontal-stretch: 1;
                     block: true;
                     ghost: true;
+                    glyph: Glyph.text-mark;
+                    label: I18n.t("captions.captions");
+                    clicked => { root.edit-captions(); }
+                }
+
+                Button {
+                    horizontal-stretch: 1;
+                    block: true;
+                    ghost: true;
                     glyph: Glyph.import;
                     label: I18n.t("captions.importSrt");
                     clicked => { root.import-srt(); }
@@ -372,5 +425,7 @@ export component CaptionsDialog inherits Modal {
                 }
             }
         }
+        }
     }
 }
+

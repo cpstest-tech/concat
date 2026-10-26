@@ -27,7 +27,7 @@ import { ModelData, SettingsData, SettingsDialog, SystemFactData } from "dialogs
 import { ProjectDialog, ProjectSheetData } from "dialogs/project.slint";
 import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint";
 import { ConfirmData, ConfirmDialog } from "dialogs/confirm.slint";
-import { CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
+import { CaptionRowData, CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { AvatarData } from "primitives/avatar.slint";
 import { VoiceoverData, VoiceoverPanel } from "dialogs/voiceover.slint";
@@ -68,7 +68,7 @@ export {
     SelectedClipData, SelectedTransitionData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
+    CaptionRowData, CaptionsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
 }
 
 export component App inherits Window {
@@ -320,10 +320,12 @@ export component App inherits Window {
     callback captions-model-changed(index: int);
     callback captions-placement-changed(index: int);
     callback captions-size-changed(index: int);
+    callback captions-template-changed(index: int);
     callback captions-begin();
     callback captions-cancel();
     callback captions-import-srt();
     callback captions-export-srt();
+    callback captions-edit();
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
@@ -700,10 +702,12 @@ export component App inherits Window {
             model-changed(index) => { root.captions-model-changed(index); }
             placement-changed(index) => { root.captions-placement-changed(index); }
             size-changed(index) => { root.captions-size-changed(index); }
+            template-changed(index) => { root.captions-template-changed(index); }
             begin => { root.captions-begin(); }
             cancel => { root.captions-cancel(); }
             import-srt => { root.captions-import-srt(); }
             export-srt => { root.captions-export-srt(); }
+            edit-captions => { root.captions-edit(); }
         }
 
         SpeechDialog {

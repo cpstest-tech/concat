@@ -297,6 +297,7 @@ pub(super) fn apply(
                     if applied {
                         clip.rewindow_keys(old, 0.0, duration);
                         crate::speed::rewindow_clip(clip, old, 0.0, duration);
+                        clip.animations.tidy(duration);
                     }
                     (applied, duration - old, old_end - JOIN_EPSILON)
                 }
@@ -339,6 +340,7 @@ pub(super) fn apply(
                         clip.rewindow_keys(old, moved, old);
                         clip.speed = retimed.speed;
                         clip.speed_curve = retimed.speed_curve;
+                        clip.animations.tidy(duration);
                     }
                     if ripple {
                         // The in-point moved; the clip stays put, and the
@@ -393,6 +395,8 @@ pub(super) fn apply(
                 // an entrance or an exit the whole did not have at the cut.
                 tail.transition_in = None;
                 tail.fade_in = 0.0;
+                tail.animations.entrance = None;
+                tail.animations.tidy(tail.duration);
                 tail.rewindow_keys(whole, offset, whole);
                 created = Some(tail.id.clone());
                 let head = timeline.clip_at_mut(index);
@@ -400,6 +404,8 @@ pub(super) fn apply(
                 head.duration = offset;
                 head.source_start = head_source;
                 head.fade_out = 0.0;
+                head.animations.exit = None;
+                head.animations.tidy(head.duration);
                 head.rewindow_keys(whole, 0.0, offset);
                 timeline.clips.insert(index + 1, Arc::new(tail));
             }

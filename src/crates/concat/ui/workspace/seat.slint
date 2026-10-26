@@ -298,6 +298,7 @@ export component Seat inherits Rectangle {
             transition-knobs: Editor.transition-knobs;
             transition-choices: Editor.transition-choices;
             clip-set(field, value) => { Editor.clip-set(field, value); }
+            clip-animation-set(slot, id, duration) => { Editor.clip-animation-set(slot, id, duration); }
             clip-set-text(field, value) => { Editor.clip-set-text(field, value); }
             clip-set-colour(field, value) => { Editor.clip-set-colour(field, value); }
             clip-commit => { Editor.clip-commit(); }

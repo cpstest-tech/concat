@@ -354,6 +354,12 @@ export struct SelectedClipData {
     /// Seconds, and the ceiling on a fade: longer than half the clip and the
     /// two ramps would overlap.
     duration: float,
+    animation-in-id: string,
+    animation-in-duration: float,
+    animation-out-id: string,
+    animation-out-duration: float,
+    animation-combo-id: string,
+    animation-combo-duration: float,
 
     // the transition on the cut into this clip; empty id means none
     transition-id: string,

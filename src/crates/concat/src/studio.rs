@@ -5526,6 +5526,40 @@ impl Studio {
         }
     }
 
+    /// Set or clear one declarative motion preset on the selected picture.
+    /// This is a normal project command, so it serializes and participates
+    /// in undo/redo like the rest of the inspector.
+    pub fn clip_animation_set(&mut self, slot: i32, id: &str, duration: f32) {
+        let Some(clip_id) = self.selection.first().cloned() else { return };
+        let Some((kind, clip_duration)) = self.clip(&clip_id).map(|clip| (clip.kind, clip.duration)) else { return };
+        if !matches!(kind, model::ClipKind::Video | model::ClipKind::Image | model::ClipKind::Text) { return; }
+        self.commit_targets = vec![clip_id.clone()];
+        self.begin_echo();
+        let Some(clip) = self.echo_clip_mut(&clip_id) else { return };
+        let mut animations = clip.animations.clone();
+        let value = if id.is_empty() {
+            None
+        } else {
+            Some(model::ClipAnimation {
+                id: id.to_owned(),
+                duration: f64::from(duration).max(0.001).min(clip_duration.max(0.001)),
+                intensity: 1.0,
+            })
+        };
+        match slot {
+            0 => { animations.entrance = value; animations.combo = None; }
+            1 => { animations.exit = value; animations.combo = None; }
+            2 => {
+                animations.combo = value;
+                if animations.combo.is_some() { animations.entrance = None; animations.exit = None; }
+            }
+            _ => return,
+        }
+        animations.tidy(clip_duration);
+        clip.animations = animations;
+        self.clip_commit();
+    }
+
     pub fn clip_set_text(&mut self, field: ClipTextField, value: &str) {
         let ids = self.edit_targets();
         if ids.is_empty() {
@@ -10689,6 +10723,12 @@ impl Studio {
             name: clip.name.as_str().into(),
             kind: kind_of(clip),
             duration: clip.duration as f32,
+            animation_in_id: clip.animations.entrance.as_ref().map(|value| value.id.as_str()).unwrap_or("").into(),
+            animation_in_duration: clip.animations.entrance.as_ref().map(|value| value.duration as f32).unwrap_or(0.5),
+            animation_out_id: clip.animations.exit.as_ref().map(|value| value.id.as_str()).unwrap_or("").into(),
+            animation_out_duration: clip.animations.exit.as_ref().map(|value| value.duration as f32).unwrap_or(0.5),
+            animation_combo_id: clip.animations.combo.as_ref().map(|value| value.id.as_str()).unwrap_or("").into(),
+            animation_combo_duration: clip.animations.combo.as_ref().map(|value| value.duration as f32).unwrap_or(clip.duration as f32),
             transition_id: clip
                 .transition_in
                 .as_ref()

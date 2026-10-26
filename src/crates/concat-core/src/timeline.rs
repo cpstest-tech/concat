@@ -243,7 +243,7 @@ impl Clip {
     /// The placement at `time`: the clip's own, moved by its animation.
     pub fn transform_at(&self, time: Rational) -> Transform {
         match &self.animation {
-            Some(animation) => animation.transform_at(self.transform, self.fraction_at(time)),
+            Some(animation) => animation.transform_at_duration(self.transform, self.fraction_at(time), self.duration.as_f64()),
             None => self.transform,
         }
     }
@@ -262,7 +262,7 @@ impl Clip {
     /// by its animation.
     pub fn opacity_at(&self, time: Rational) -> f32 {
         match &self.animation {
-            Some(animation) => animation.opacity_at(self.opacity, self.fraction_at(time)),
+            Some(animation) => animation.opacity_at_duration(self.opacity, self.fraction_at(time), self.duration.as_f64()),
             None => self.opacity,
         }
     }

@@ -57,6 +57,7 @@ pub enum CaptionsMsg {
     SourceChanged(i32),
     TextEdited(String),
     ModelChanged(i32),
+    TemplateChanged(i32),
     PlacementChanged(i32),
     SizeChanged(i32),
     /// Run the pass the sheet describes.
@@ -74,7 +75,13 @@ pub enum CaptionsMsg {
     ExportSrt,
     /// Where they go.
     ExportSrtTo(PathBuf),
+    OpenEditor,
+    CloseEditor,
+    EditRow { id: String, text: String, start: String, end: String },
 }
+
+#[derive(Clone, Debug)]
+pub struct CaptionRow { pub id: String, pub text: String, pub start: f64, pub end: f64 }
 
 /// The clip a transcription is running over, as the finished segments
 /// need it: where it starts on the timeline and how fast it plays.
@@ -84,6 +91,7 @@ struct Subject {
     speed: f64,
     /// The look chosen when the run began.
     look: (f64, f64),
+    word_by_word: bool,
     /// The transcriber model, and the thirty-second windows whisper reads
     /// the sound in: what the run's timing is kept by.
     model: String,
@@ -99,6 +107,7 @@ const WINDOW_SECONDS_PER_MB: f32 = 1.0 / 160.0;
 #[derive(Default)]
 pub struct CaptionsPane {
     pub open: bool,
+    pub editor_open: bool,
     /// "Use Sample Voice": the words come from [`Self::clip`]'s sound
     /// when on, from [`Self::text`] when off.
     pub from_voice: bool,
@@ -119,6 +128,8 @@ pub struct CaptionsPane {
     pub placement: usize,
     /// 0 small, 1 medium, 2 large.
     pub size: usize,
+    /// 0 sentence captions, 1 the word-at-a-time video template.
+    pub template: usize,
     pub running: bool,
     /// How far the running transcription looks.
     pub pace: Pace,
@@ -143,7 +154,24 @@ impl CaptionsPane {
                 self.open_on(studio, selected, false);
             }
             CaptionsMsg::OpenOnClip(id) => self.open_on(studio, Some(id), true),
-            CaptionsMsg::Close => self.open = false,
+            CaptionsMsg::Close => { self.open = false; self.editor_open = false; }
+            CaptionsMsg::OpenEditor => self.editor_open = true,
+            CaptionsMsg::CloseEditor => self.editor_open = false,
+            CaptionsMsg::EditRow { id, text, start, end } => {
+                let (Some(start), Some(end)) = (start.parse::<f64>().ok(), end.parse::<f64>().ok()) else { return; };
+                let Some(clip) = studio.timeline().clips.iter().find(|clip| clip.id == id && clip.kind == ClipKind::Text) else { return; };
+                let patch = concat_project::commands::ClipPatch { text: Some(Some(TextStyle { content: text, ..clip.text.clone().unwrap_or_default() })), ..Default::default() };
+                let desired_start = start.max(0.0);
+                let desired_duration = (end - desired_start).max(1.0 / 60.0);
+                let mut commands = vec![Command::UpdateClip { clip_id: id.clone(), patch }];
+                if (desired_start - clip.start).abs() > 0.0001 {
+                    commands.push(Command::MoveClips { moves: vec![concat_project::commands::ClipMove { clip_id: id.clone(), track_id: clip.track_id.clone(), start: desired_start }] });
+                }
+                if (desired_duration - clip.duration).abs() > 0.0001 {
+                    commands.push(Command::TrimClip { clip_id: id, edge: concat_project::commands::TrimEdge::End, delta: desired_duration - clip.duration, ripple: false });
+                }
+                studio.apply(Command::Batch { commands });
+            }
             CaptionsMsg::VoiceToggled(on) => {
                 self.from_voice = on;
                 self.message.clear();
@@ -174,6 +202,7 @@ impl CaptionsPane {
                 self.placement = (index.max(0) as usize).min(2);
             }
             CaptionsMsg::SizeChanged(index) => self.size = (index.max(0) as usize).min(2),
+            CaptionsMsg::TemplateChanged(index) => self.template = (index.max(0) as usize).min(1),
             CaptionsMsg::Begin => {
                 if self.from_voice {
                     self.run_sound(studio);
@@ -203,17 +232,43 @@ impl CaptionsPane {
                         let base = studio.prefs.title_style.clone();
                         let commands: Vec<Command> = segments
                             .into_iter()
-                            .filter_map(|segment| {
-                                let text = segment.text.trim().to_owned();
-                                (!text.is_empty()).then(|| {
-                                    caption_clip(
-                                        text,
-                                        subject.start + segment.start / subject.speed,
-                                        ((segment.end - segment.start) / subject.speed).max(0.2),
-                                        look,
-                                        base.as_ref(),
-                                    )
-                                })
+                            .flat_map(|segment| {
+                                let start = subject.start + segment.start / subject.speed;
+                                let duration = (segment.end - segment.start) / subject.speed;
+                                if subject.word_by_word {
+                                    if segment.text.split_whitespace().count() > 1 {
+                                        // If Whisper did not return usable token
+                                        // times for a segment, preserve the word
+                                        // template with an estimated fallback.
+                                        word_caption_clips(
+                                            &segment.text,
+                                            start,
+                                            duration,
+                                            base.as_ref(),
+                                        )
+                                    } else {
+                                        vec![word_caption_clip(
+                                            segment.text.to_uppercase(),
+                                            start,
+                                            duration.max(0.01),
+                                            base.as_ref(),
+                                        )]
+                                    }
+                                } else {
+                                    let text = segment.text.trim().to_owned();
+                                    (!text.is_empty())
+                                        .then(|| {
+                                            caption_clip(
+                                                text,
+                                                start,
+                                                duration.max(0.2),
+                                                look,
+                                                base.as_ref(),
+                                            )
+                                        })
+                                        .into_iter()
+                                        .collect()
+                                }
                             })
                             .collect();
                         let count = commands.len();
@@ -222,6 +277,7 @@ impl CaptionsPane {
                             studio.notify(&t("captions.nothingSaidClip"), true);
                         } else {
                             studio.apply(Command::Batch { commands });
+                            self.editor_open = true;
                             studio.notify(&tf("captions.addedCaptions", &[&count]), false);
                         }
                     }
@@ -281,6 +337,7 @@ impl CaptionsPane {
         let count = commands.len();
         self.open = false;
         studio.apply(Command::Batch { commands });
+        self.editor_open = true;
         studio.notify(&tf("captions.addedCaptions", &[&count]), false);
     }
 
@@ -454,15 +511,20 @@ impl CaptionsPane {
         let base = studio.prefs.title_style.clone();
         let commands: Vec<Command> = lines
             .into_iter()
-            .map(|(text, seconds)| {
-                let command = caption_clip(text, at, seconds, look, base.as_ref());
+            .flat_map(|(text, seconds)| {
+                let start = at;
                 at += seconds;
-                command
+                if self.template == 1 {
+                    word_caption_clips(&text, start, seconds, base.as_ref())
+                } else {
+                    vec![caption_clip(text, start, seconds, look, base.as_ref())]
+                }
             })
             .collect();
         let count = commands.len();
         self.open = false;
         studio.apply(Command::Batch { commands });
+        self.editor_open = true;
         studio.notify(&tf("captions.addedCaptions", &[&count]), false);
     }
 
@@ -495,6 +557,7 @@ impl CaptionsPane {
             source_start: clip.source_start,
             window: clip.duration * clip.speed,
             model_id: model.clone(),
+            word_timestamps: self.template == 1,
         };
         let dirs = studio.host.dirs.clone();
         let transcriber = Arc::clone(&studio.host.transcriber);
@@ -522,6 +585,7 @@ impl CaptionsPane {
             start: clip.start,
             speed: clip.speed,
             look: self.look(),
+            word_by_word: self.template == 1,
             model,
             windows,
         });
@@ -555,8 +619,31 @@ impl CaptionsPane {
             .into_iter()
             .map(|source| source.label.into())
             .collect();
+        let mut caption_clips: Vec<_> = studio
+            .timeline()
+            .clips
+            .iter()
+            .filter(|clip| clip.kind == ClipKind::Text)
+            .collect();
+        caption_clips.sort_by(|left, right| left.start.total_cmp(&right.start));
+        let rows = caption_clips
+            .into_iter()
+            .map(|clip| crate::ui::CaptionRowData {
+                id: clip.id.as_str().into(),
+                text: clip
+                    .text
+                    .as_ref()
+                    .map(|style| style.content.as_str())
+                    .unwrap_or_default()
+                    .into(),
+                start: clip.start as f32,
+                end: (clip.start + clip.duration) as f32,
+            })
+            .collect::<Vec<_>>();
         CaptionsSheetData {
             open: self.open,
+            editor_open: self.editor_open,
+            rows: rows.into(),
             from_voice: self.from_voice,
             sources: std::rc::Rc::new(slint::VecModel::from(labels)).into(),
             source,
@@ -564,6 +651,7 @@ impl CaptionsPane {
             model: self.model as i32,
             placement: self.placement as i32,
             size: self.size as i32,
+            template: self.template as i32,
             running: self.running,
             progress: self.pace.floor,
             ceiling: self.pace.ceiling,
@@ -771,6 +859,78 @@ fn caption_clip(
         style: Some(style),
         duration: Some(duration),
         offset_y: Some(offset_y),
+    }
+}
+
+/// The social-video template: a single large, centred word at a time.
+/// Whisper currently returns phrase timestamps, so word boundaries are
+/// estimated within each phrase by character count.
+fn word_caption_clips(
+    text: &str,
+    start: f64,
+    duration: f64,
+    base: Option<&TextStyle>,
+) -> Vec<Command> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let total: usize = words.iter().map(|word| word.chars().count().max(1)).sum();
+    if words.is_empty() || total == 0 {
+        return Vec::new();
+    }
+    let mut at = start;
+    words
+        .iter()
+        .map(|word| {
+            let share = word.chars().count().max(1) as f64 / total as f64;
+            let seconds = duration * share;
+            let command = word_caption_clip(word.to_uppercase(), at, seconds, base);
+            at += seconds;
+            command
+        })
+        .collect()
+}
+
+fn word_caption_clip(
+    text: String,
+    start: f64,
+    duration: f64,
+    base: Option<&TextStyle>,
+) -> Command {
+    let style = match base {
+        Some(base) => TextStyle {
+            content: text,
+            font_family: "Hanken Grotesk".to_owned(),
+            font_size: 0.09,
+            font_weight: 900.0,
+            color: "#ffffff".to_owned(),
+            align: concat_project::model::TextAlign::Center,
+            stroke_width: 0.008,
+            stroke_color: "#000000".to_owned(),
+            shadow: true,
+            background: String::new(),
+            max_width: 0.0,
+            max_height: 0.0,
+            ..base.clone()
+        },
+        None => TextStyle {
+            content: text,
+            font_family: "Hanken Grotesk".to_owned(),
+            font_size: 0.09,
+            font_weight: 900.0,
+            color: "#ffffff".to_owned(),
+            align: concat_project::model::TextAlign::Center,
+            stroke_width: 0.008,
+            stroke_color: "#000000".to_owned(),
+            shadow: true,
+            ..TextStyle::default()
+        },
+    };
+    Command::AddTextClip {
+        track_id: None,
+        above: true,
+        start,
+        style: Some(style),
+        duration: Some(duration),
+        offset_y: Some(-0.08),
     }
 }
 

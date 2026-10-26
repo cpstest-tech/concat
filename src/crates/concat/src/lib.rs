@@ -1298,6 +1298,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_set(on_lanes!(|state, field: ClipField, value: f32| {
         state.clip_set(field, value);
     }));
+    editor.on_clip_animation_set(on_lanes!(|state, slot: i32, id: SharedString, duration: f32| {
+        state.clip_animation_set(slot, id.as_str(), duration);
+    }));
     editor.on_clip_set_text(on_lanes!(
         |state, field: ClipTextField, value: SharedString| {
             state.clip_set_text(field, value.as_str());
@@ -2064,6 +2067,11 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_captions_closed(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Close));
     }));
+    app.on_captions_editor_closed(on_window!(|state| { state.handle(Msg::Captions(CaptionsMsg::CloseEditor)); }));
+    app.on_captions_edit(on_window!(|state| { state.handle(Msg::Captions(CaptionsMsg::OpenEditor)); }));
+    app.on_captions_edit_row(on_window!(|state, id: SharedString, text: SharedString, start: SharedString, end: SharedString| {
+        state.handle(Msg::Captions(CaptionsMsg::EditRow { id: id.to_string(), text: text.to_string(), start: start.to_string(), end: end.to_string() }));
+    }));
     app.on_captions_voice_toggled(on_window!(|state, on: bool| {
         state.handle(Msg::Captions(CaptionsMsg::VoiceToggled(on)));
     }));
@@ -2081,6 +2089,9 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     }));
     app.on_captions_size_changed(on_window!(|state, index: i32| {
         state.handle(Msg::Captions(CaptionsMsg::SizeChanged(index)));
+    }));
+    app.on_captions_template_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::Captions(CaptionsMsg::TemplateChanged(index)));
     }));
     app.on_captions_begin(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Begin));

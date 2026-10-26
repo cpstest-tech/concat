@@ -188,6 +188,7 @@ export component ConfigPane inherits Rectangle {
     callback chain-set-param(audio: bool, index: int, key: string, value: float);
 
     callback clip-set(field: ClipField, value: float);
+    callback clip-animation-set(slot: int, id: string, duration: float);
     callback clip-set-text(field: ClipTextField, value: string);
     callback clip-set-colour(field: ClipTextField, value: color);
     callback clip-commit();
@@ -650,7 +651,14 @@ export component ConfigPane inherits Rectangle {
                         brush-tool: root.brush-tool;
                         brush-size: root.brush-size;
                         painting: root.painting;
+                        animation-in-id: root.selected.animation-in-id;
+                        animation-in-duration: root.selected.animation-in-duration;
+                        animation-out-id: root.selected.animation-out-id;
+                        animation-out-duration: root.selected.animation-out-duration;
+                        animation-combo-id: root.selected.animation-combo-id;
+                        animation-combo-duration: root.selected.animation-combo-duration;
                         set(field, value) => { root.clip-set(field, value); }
+                        animation-set(slot, id, duration) => { root.clip-animation-set(slot, id, duration); }
                         commit => { root.clip-commit(); }
                         chain-add(id) => { root.chain-add(false, id); }
                         chain-remove(index) => { root.chain-remove(false, index); }

@@ -134,6 +134,10 @@ pub struct ExportClip {
     /// Empty for none.
     #[serde(default)]
     pub animation: Vec<ExportKey>,
+    /// Independent CapCut-style presets, evaluated in the shared core clip
+    /// path after any authored property keys.
+    #[serde(default)]
+    pub preset_animations: concat_project::model::ClipAnimations,
     /// Mirrored left to right.
     #[serde(default)]
     pub flip_h: bool,
@@ -326,6 +330,7 @@ impl ExportClip {
             speed_curve: Vec::new(),
             speed_slopes: Vec::new(),
             animation: Vec::new(),
+            preset_animations: Default::default(),
             flip_h: false,
             flip_v: false,
             blend: String::new(),
@@ -1237,7 +1242,7 @@ pub fn render_on(
 /// The clip's gain track, or an empty one when its gain is the single number
 /// in `ExportClip::volume`.
 fn volume_track(clip: &ExportClip) -> AnimTrack {
-    animation_of(&clip.animation)
+    animation_of(clip)
         .map(|animation| animation.volume)
         .unwrap_or_default()
 }

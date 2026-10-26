@@ -1747,6 +1747,63 @@ pub mod ranges {
 /// One placed piece of a timeline: a stretch of media (or a title) with its
 /// timing, mix, transform, and effects. Everything an edit decision touches
 /// lives here, which is why most commands are clip commands.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ClipAnimations {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entrance: Option<ClipAnimation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit: Option<ClipAnimation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub combo: Option<ClipAnimation>,
+}
+
+impl ClipAnimations {
+    pub fn is_empty(&self) -> bool {
+        self.entrance.is_none() && self.exit.is_none() && self.combo.is_none()
+    }
+
+    pub fn tidy(&mut self, clip_duration: f64) {
+        fn clean(animation: &mut Option<ClipAnimation>, ceiling: f64) {
+            if let Some(value) = animation.as_mut() {
+                if !value.duration.is_finite() || !value.intensity.is_finite() || value.id.is_empty() {
+                    *animation = None;
+                    return;
+                }
+                value.duration = value.duration.clamp(0.001, ceiling.max(0.001));
+                value.intensity = value.intensity.clamp(0.0, 3.0);
+            }
+        }
+        if self.combo.is_some() {
+            self.entrance = None;
+            self.exit = None;
+            clean(&mut self.combo, clip_duration);
+        } else {
+            clean(&mut self.entrance, clip_duration);
+            clean(&mut self.exit, clip_duration);
+            if let (Some(inside), Some(outside)) = (&mut self.entrance, &mut self.exit) {
+                let maximum = clip_duration.max(0.001);
+                if inside.duration + outside.duration > maximum {
+                    inside.duration = inside.duration.min(maximum - 0.001).max(0.001);
+                    outside.duration = (maximum - inside.duration).max(0.001);
+                }
+            }
+        }
+    }
+}
+
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipAnimation {
+    /// Stable preset id, e.g. `fade-in`, `ken-burns`, `oscillate`.
+    pub id: String,
+    pub duration: f64,
+    #[serde(default = "unity", skip_serializing_if = "is_unity")]
+    pub intensity: f64,
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Clip {
@@ -1810,6 +1867,10 @@ pub struct Clip {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[serde(deserialize_with = "wire::list")]
     pub keys: Vec<ClipKey>,
+    /// CapCut-style motion presets. In and Out may coexist; Combo is
+    /// mutually exclusive with both. Durations are seconds.
+    #[serde(default, skip_serializing_if = "ClipAnimations::is_empty")]
+    pub animations: ClipAnimations,
     /// Mirrored left to right.
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip_h: bool,
@@ -1970,6 +2031,7 @@ impl Clip {
             preserve_pitch: true,
             speed_curve: None,
             keys: Vec::new(),
+            animations: ClipAnimations::default(),
             flip_h: false,
             flip_v: false,
             blend: String::new(),
@@ -2015,6 +2077,7 @@ impl Clip {
         self.stretch_x = finite(self.stretch_x, 1.0).clamp(MIN_STRETCH, MAX_STRETCH);
         self.stretch_y = finite(self.stretch_y, 1.0).clamp(MIN_STRETCH, MAX_STRETCH);
         self.opacity = finite(self.opacity, 1.0).clamp(0.0, 1.0);
+        self.animations.tidy(self.duration);
         self.speed = finite(self.speed, 1.0).clamp(MIN_SPEED, MAX_SPEED);
         self.speed_curve = self.speed_curve.take().and_then(|points| {
             let points: Vec<SpeedPoint> = points

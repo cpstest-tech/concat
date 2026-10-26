@@ -115,6 +115,11 @@ pub fn flatten_timeline_in(
                     .filter_map(|point| point.slope)
                     .collect(),
                 animation: export_keys(clip),
+                preset_animations: if matches!(kind, ClipKind::Video | ClipKind::Image) {
+                    clip.animations.clone()
+                } else {
+                    Default::default()
+                },
                 flip_h: clip.flip_h,
                 flip_v: clip.flip_v,
                 blend: clip.blend.clone(),
@@ -405,7 +410,7 @@ mod tests {
             Rational::from_int(10),
         );
         clip.mask = Some(mask.engine());
-        clip.animation = crate::resolve::animation_of(&flat[0].animation);
+        clip.animation = crate::resolve::animation_of(&flat[0]);
         let start = clip.mask_at(Rational::ZERO).expect("a mask");
         let middle = clip.mask_at(Rational::from_int(5)).expect("a mask");
         assert!((start.x + 0.2).abs() < 1e-12);
