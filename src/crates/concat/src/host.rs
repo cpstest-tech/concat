@@ -356,16 +356,19 @@ pub fn after_dialog<T: Send + 'static>(
     ask: impl FnOnce() -> Option<T> + Send + 'static,
     then: impl FnOnce(&mut Studio, &App, &Models, T) + Send + 'static,
 ) {
-    let _ = slint::invoke_from_event_loop(move || {
-        let Some(answer) = ask() else {
-            return;
-        };
-        Shell::with(|shell, app| {
-            {
-                let mut studio = shell.studio.borrow_mut();
-                then(&mut studio, &app, &shell.models, answer);
-            }
-            shell.studio.borrow().publish(&app, &shell.models);
+    std::thread::spawn(move || {
+        let answer = ask();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(answer) = answer else {
+                return;
+            };
+            Shell::with(|shell, app| {
+                {
+                    let mut studio = shell.studio.borrow_mut();
+                    then(&mut studio, &app, &shell.models, answer);
+                }
+                shell.studio.borrow().publish(&app, &shell.models);
+            });
         });
     });
 }

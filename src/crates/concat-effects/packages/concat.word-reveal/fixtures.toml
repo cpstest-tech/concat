@@ -1,0 +1,18 @@
+# Reveal with no reveal map bound returns clear black at progress 0.
+
+[[probe]]
+name = "default"
+input = [0.5, 0.5, 0.5, 1]
+expect = [0, 0, 0, 0]
+
+[[probe]]
+name = "minimum"
+at = "min"
+input = [0.5, 0.5, 0.5, 1]
+expect = [0, 0, 0, 0]
+
+[[probe]]
+name = "maximum"
+at = "max"
+input = [0.5, 0.5, 0.5, 1]
+expect = [0, 0, 0, 0]

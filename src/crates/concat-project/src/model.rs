@@ -219,6 +219,8 @@ pub struct Track {
     pub visible: bool,
     /// Audio on this track is silent when true.
     pub muted: bool,
+    /// Whether magnetic timeline ripple is enabled on this track.
+    pub magnetic: bool,
     /// Fields this build does not know, kept so they round-trip.
     #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
     pub extra: Map<String, Value>,
@@ -230,6 +232,7 @@ impl Default for Track {
             id: String::new(),
             visible: true,
             muted: false,
+            magnetic: false,
             extra: Map::new(),
         }
     }
@@ -1744,30 +1747,36 @@ pub mod ranges {
     }
 }
 
-/// One placed piece of a timeline: a stretch of media (or a title) with its
-/// timing, mix, transform, and effects. Everything an edit decision touches
-/// lives here, which is why most commands are clip commands.
+/// Motion preset configuration for a clip.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ClipAnimations {
+    /// In/Entrance animation slot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entrance: Option<ClipAnimation>,
+    /// Out/Exit animation slot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exit: Option<ClipAnimation>,
+    /// Combo animation slot (mutually exclusive with entrance/exit).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub combo: Option<ClipAnimation>,
 }
 
 impl ClipAnimations {
+    /// Returns true if no animations are configured.
     pub fn is_empty(&self) -> bool {
         self.entrance.is_none() && self.exit.is_none() && self.combo.is_none()
     }
 
+    /// Constrains animations within clip duration and ensures combo is exclusive.
     pub fn tidy(&mut self, clip_duration: f64) {
         fn clean(animation: &mut Option<ClipAnimation>, ceiling: f64) {
             if let Some(value) = animation.as_mut() {
-                if !value.duration.is_finite() || !value.intensity.is_finite() || value.id.is_empty() {
+                if !value.duration.is_finite()
+                    || !value.intensity.is_finite()
+                    || value.id.is_empty()
+                {
                     *animation = None;
                     return;
                 }
@@ -1793,17 +1802,23 @@ impl ClipAnimations {
     }
 }
 
+/// A single motion preset instance with its ID, duration, and intensity.
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClipAnimation {
     /// Stable preset id, e.g. `fade-in`, `ken-burns`, `oscillate`.
     pub id: String,
+    /// Duration of the animation in seconds.
     pub duration: f64,
+    /// Intensity multiplier for the animation effect.
     #[serde(default = "unity", skip_serializing_if = "is_unity")]
     pub intensity: f64,
 }
 
+/// One placed piece of a timeline: a stretch of media (or a title) with its
+/// timing, mix, transform, and effects. Everything an edit decision touches
+/// lives here, which is why most commands are clip commands.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Clip {
@@ -2712,6 +2727,7 @@ impl Project {
                 background: Background::None,
                 tracks: vec![Track {
                     id: "T1".to_owned(),
+                    magnetic: true,
                     ..Track::default()
                 }],
                 clips: Vec::new(),

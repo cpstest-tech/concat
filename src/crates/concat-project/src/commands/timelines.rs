@@ -25,10 +25,12 @@ pub(super) fn apply(
                     .map(|timeline| timeline.name.clone()),
             );
             let tracks = (1..=4)
-                .map(|_| Track {
+                .enumerate()
+                .map(|(i, _)| Track {
                     id: mint.next("t"),
                     visible: true,
                     muted: false,
+                    magnetic: i == 0,
                     extra: Default::default(),
                 })
                 .collect();

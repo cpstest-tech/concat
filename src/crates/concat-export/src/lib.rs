@@ -523,10 +523,25 @@ pub struct Reporter<'a> {
     pub progress: &'a mut dyn FnMut(i64, i64, &'static str),
     /// Checked between frames and stages; true aborts cleanly.
     pub cancel: &'a AtomicBool,
+    /// Optional preview callback for the frame being rendered.
+    pub frame_preview: Option<&'a mut dyn FnMut(&concat_core::frame::Frame)>,
 }
 
 impl Reporter<'_> {
     fn emit(&mut self, frame: i64, total: i64, stage: &'static str) {
+        (self.progress)(frame, total, stage);
+    }
+
+    fn emit_frame(
+        &mut self,
+        frame: i64,
+        total: i64,
+        stage: &'static str,
+        composed: &concat_core::frame::Frame,
+    ) {
+        if let Some(preview) = self.frame_preview.as_mut() {
+            preview(composed);
+        }
         (self.progress)(frame, total, stage);
     }
 
@@ -1875,7 +1890,7 @@ fn render_picture(
         decoders.retain(|clip, _| live.contains(clip));
 
         if progress_due(index, said.elapsed()) {
-            reporter.emit(index, total_frames, "rendering");
+            reporter.emit_frame(index, total_frames, "rendering", &composed);
             said = std::time::Instant::now();
         }
     }
@@ -1884,13 +1899,13 @@ fn render_picture(
 }
 
 /// How many frames apart an export says how far it has got, at most.
-const PROGRESS_FRAMES: i64 = 15;
+const PROGRESS_FRAMES: i64 = 6;
 
 /// And how long it goes without saying, at most, frame time allowing: a
 /// frame that takes seconds - a heavy stack, a software adapter, a card
 /// near its memory - shows as a bar that moves slowly rather than one that
 /// sat still for fifteen of them and looked hung (#297).
-const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Whether the frame at `index` is one to report, `since` the last report.
 fn progress_due(index: i64, since: std::time::Duration) -> bool {
@@ -3256,6 +3271,7 @@ mod tests {
         let reporter = Reporter {
             progress: &mut progress,
             cancel: &cancel,
+            frame_preview: None,
         };
         // Whether or not this machine can draw the frames, the folder is
         // there before the first one is asked for.
@@ -3336,6 +3352,7 @@ mod tests {
         let reporter = Reporter {
             progress: &mut progress,
             cancel: &cancel,
+            frame_preview: None,
         };
         let result = render_on(&request, Some(failing), reporter);
         let _ = std::fs::remove_dir_all(&dir);

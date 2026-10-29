@@ -552,7 +552,9 @@ impl Transcriber {
             // Whisper's timestamps are centiseconds.
             let start = segment.start_timestamp() as f64 / 100.0;
             let end = segment.end_timestamp() as f64 / 100.0;
-            let Ok(text) = segment.to_str_lossy() else { continue };
+            let Ok(text) = segment.to_str_lossy() else {
+                continue;
+            };
             let text = text.trim().to_owned();
             if request.word_timestamps {
                 let tokens = (0..segment.n_tokens()).filter_map(|index| {
@@ -607,18 +609,16 @@ fn word_segments(tokens: impl IntoIterator<Item = (String, f64, f64)>) -> Vec<Se
     let mut start: Option<f64> = None;
     let mut end = 0.0_f64;
 
-    let flush = |words: &mut Vec<Segment>,
-                 text: &mut String,
-                 start: &mut Option<f64>,
-                 end: &mut f64| {
-        let word = std::mem::take(text);
-        if let Some(word_start) = start.take() {
-            if let Some(word) = keep_segment(word_start, *end, word) {
-                words.push(word);
+    let flush =
+        |words: &mut Vec<Segment>, text: &mut String, start: &mut Option<f64>, end: &mut f64| {
+            let word = std::mem::take(text);
+            if let Some(word_start) = start.take() {
+                if let Some(word) = keep_segment(word_start, *end, word) {
+                    words.push(word);
+                }
             }
-        }
-        *end = 0.0;
-    };
+            *end = 0.0;
+        };
 
     for (token, token_start, token_end) in tokens {
         if !token_start.is_finite() || !token_end.is_finite() || token_end <= token_start {
@@ -644,8 +644,8 @@ fn word_segments(tokens: impl IntoIterator<Item = (String, f64, f64)>) -> Vec<Se
                 .sum();
             let mut at = token_start;
             for piece in pieces {
-                let span = (token_end - token_start).max(0.0)
-                    * piece.chars().count().max(1) as f64 / total_chars as f64;
+                let span = (token_end - token_start).max(0.0) * piece.chars().count().max(1) as f64
+                    / total_chars as f64;
                 if let Some(word) = keep_segment(at, at + span, piece.to_owned()) {
                     words.push(word);
                 }
@@ -654,7 +654,9 @@ fn word_segments(tokens: impl IntoIterator<Item = (String, f64, f64)>) -> Vec<Se
             continue;
         }
 
-        let Some(piece) = pieces.first() else { continue };
+        let Some(piece) = pieces.first() else {
+            continue;
+        };
         if start.is_none() {
             start = Some(token_start);
         }

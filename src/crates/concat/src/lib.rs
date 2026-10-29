@@ -211,7 +211,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         platform::set_ui_scale(percent);
     }
 
-    let (startup_mark, safe) = safe_start();
+    let (startup_mark, safe) = if smoke { (None, false) } else { safe_start() };
 
     // The shell doesn't exist yet - it needs the window the backend is about
     // to help create - but `Shell::with` is a no-op until `Shell::install`
@@ -220,7 +220,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // dropped file gets the same probe, the same failure notice, and the
     // same "no project open yet" no-op that a picked one does.
     let gpu = platform::select_backend(
-        |paths| {
+        |paths, cursor| {
             Shell::with(|shell, app| {
                 {
                     let mut studio = shell.studio.borrow_mut();
@@ -239,11 +239,50 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                     } else if to_library {
                         studio.handle(Msg::Sounds(SoundsMsg::Import(paths)));
                     } else {
-                        studio.handle(Msg::Media(MediaMsg::Import(paths)));
+                        // Check if dropped onto the timeline
+                        let drop_target =
+                            cursor.and_then(|(x, y)| studio.timeline_drop_target(x, y));
+                        if let Some((seconds, row, is_new_track)) = drop_target {
+                            let first_path = paths.first().cloned();
+                            // First import into the project media bin
+                            studio.handle(Msg::Media(MediaMsg::Import(paths)));
+                            // And place the primary clip directly onto the timeline
+                            if let Some(path) = first_path {
+                                let payload = format!("file:{}", path.display());
+                                if let Some(plan) =
+                                    studio.plan(&payload, seconds, row, is_new_track)
+                                {
+                                    studio.place(&plan);
+                                }
+                            }
+                        } else if let Some(plan) = studio.drop.take() {
+                            studio.place(&plan);
+                        } else {
+                            studio.handle(Msg::Media(MediaMsg::Import(paths)));
+                        }
                     }
+                    studio.drop = None;
                 }
                 shell.studio.borrow_mut().refresh_art();
                 shell.studio.borrow().publish(&app, &shell.models);
+            });
+        },
+        |path, (x, y)| {
+            Shell::with(|shell, app| {
+                let mut studio = shell.studio.borrow_mut();
+                if let Some((seconds, row, is_new_track)) = studio.timeline_drop_target(x, y) {
+                    let payload = format!("file:{}", path.display());
+                    studio.drop = studio.plan(&payload, seconds, row, is_new_track);
+                } else {
+                    studio.drop = None;
+                }
+                shell.studio.borrow().publish_lanes(&app, &shell.models);
+            });
+        },
+        || {
+            Shell::with(|shell, app| {
+                shell.studio.borrow_mut().drop = None;
+                shell.studio.borrow().publish_lanes(&app, &shell.models);
             });
         },
         // A press anywhere but the field being typed into takes the focus
@@ -1077,8 +1116,8 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
 
     // ── lanes ──
     editor.on_track_flag_changed(on_window!(
-        |state, row: i32, visible: bool, muted: bool, locked: bool| {
-            state.track_flags(row, visible, muted, locked);
+        |state, row: i32, visible: bool, muted: bool, locked: bool, magnetic: bool| {
+            state.track_flags(row, visible, muted, locked, magnetic);
         }
     ));
     editor.on_track_sized(on_window!(|state, row: i32, size: TrackSize| {
@@ -1116,18 +1155,23 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                                       payload: SharedString,
                                       seconds: f32,
                                       y: f32| {
-        let row = state.row_at(y);
-        state.drop = state.plan(payload.as_str(), seconds, row);
+        let is_new_track = y < 0.0;
+        let row = if is_new_track { -1 } else { state.row_at(y) };
+        state.drop = state.plan(payload.as_str(), seconds, row, is_new_track);
+    }));
+    editor.on_drag_hover_ended(on_lanes!(|state| {
+        state.drop = None;
     }));
     editor.on_dropped(on_window!(|state,
                                   payload: SharedString,
                                   seconds: f32,
                                   y: f32| {
-        state.drop = None;
-        let row = state.row_at(y);
-        if let Some(plan) = state.plan(payload.as_str(), seconds, row) {
+        let is_new_track = y < 0.0;
+        let row = if is_new_track { -1 } else { state.row_at(y) };
+        if let Some(plan) = state.plan(payload.as_str(), seconds, row, is_new_track) {
             state.place(&plan);
         }
+        state.drop = None;
     }));
     editor.on_band_selected(on_lanes!(
         |state, from: f32, to: f32, from_y: f32, to_y: f32, additive: bool| {
@@ -1298,9 +1342,11 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_set(on_lanes!(|state, field: ClipField, value: f32| {
         state.clip_set(field, value);
     }));
-    editor.on_clip_animation_set(on_lanes!(|state, slot: i32, id: SharedString, duration: f32| {
-        state.clip_animation_set(slot, id.as_str(), duration);
-    }));
+    editor.on_clip_animation_set(on_lanes!(
+        |state, slot: i32, id: SharedString, duration: f32| {
+            state.clip_animation_set(slot, id.as_str(), duration);
+        }
+    ));
     editor.on_clip_set_text(on_lanes!(
         |state, field: ClipTextField, value: SharedString| {
             state.clip_set_text(field, value.as_str());
@@ -1901,6 +1947,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_export_bitrate_changed(on_window!(|state, mbps: f32| {
         state.handle(Msg::Export(ExportMsg::BitrateChanged(mbps)));
     }));
+    app.on_export_match_best_media(on_window!(|state| {
+        state.handle(Msg::Export(ExportMsg::MatchBestMedia));
+    }));
+    app.on_export_open_file(on_window!(|state| {
+        state.handle(Msg::Export(ExportMsg::OpenFinishedFile));
+    }));
+    app.on_export_open_in_editor(on_window!(|state| {
+        state.open_exported_in_editor();
+    }));
     app.on_export_again(on_window!(|state| {
         state.handle(Msg::Export(ExportMsg::Again));
     }));
@@ -2067,11 +2122,22 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     app.on_captions_closed(on_window!(|state| {
         state.handle(Msg::Captions(CaptionsMsg::Close));
     }));
-    app.on_captions_editor_closed(on_window!(|state| { state.handle(Msg::Captions(CaptionsMsg::CloseEditor)); }));
-    app.on_captions_edit(on_window!(|state| { state.handle(Msg::Captions(CaptionsMsg::OpenEditor)); }));
-    app.on_captions_edit_row(on_window!(|state, id: SharedString, text: SharedString, start: SharedString, end: SharedString| {
-        state.handle(Msg::Captions(CaptionsMsg::EditRow { id: id.to_string(), text: text.to_string(), start: start.to_string(), end: end.to_string() }));
+    app.on_captions_editor_closed(on_window!(|state| {
+        state.handle(Msg::Captions(CaptionsMsg::CloseEditor));
     }));
+    app.on_captions_edit(on_window!(|state| {
+        state.handle(Msg::Captions(CaptionsMsg::OpenEditor));
+    }));
+    app.on_captions_edit_row(on_window!(
+        |state, id: SharedString, text: SharedString, start: SharedString, end: SharedString| {
+            state.handle(Msg::Captions(CaptionsMsg::EditRow {
+                id: id.to_string(),
+                text: text.to_string(),
+                start: start.to_string(),
+                end: end.to_string(),
+            }));
+        }
+    ));
     app.on_captions_voice_toggled(on_window!(|state, on: bool| {
         state.handle(Msg::Captions(CaptionsMsg::VoiceToggled(on)));
     }));
@@ -2276,8 +2342,27 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     // The drag payloads: plain text, because a drag that says "media:12" is
     // one that can be read in a log.
     app.global::<Payload>().on_of(DataTransfer::from);
-    app.global::<Payload>()
-        .on_text(|payload| payload.plain_text().unwrap_or_default());
+    app.global::<Payload>().on_text(|payload| {
+        if let Ok(mut paths) = payload.file_paths() {
+            if let Some(first) = paths.next() {
+                return format!("file:{}", first.to_string_lossy()).into();
+            }
+        }
+        if let Ok(text) = payload.plain_text() {
+            let s = text.trim();
+            if let Some(rest) = s.strip_prefix("file://") {
+                let path = rest.strip_prefix("localhost").unwrap_or(rest);
+                let decoded = path.replace("%20", " ");
+                return format!("file:{decoded}").into();
+            }
+            if s.starts_with('/') && std::path::Path::new(s).exists() {
+                return format!("file:{s}").into();
+            }
+            text
+        } else {
+            SharedString::default()
+        }
+    });
     app.global::<Payload>().on_pane_seat(|text| {
         text.strip_prefix("pane:")
             .and_then(|rest| rest.split(':').next())
@@ -2289,6 +2374,16 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             .and_then(|rest| rest.split(':').next())
             .and_then(|index| index.parse().ok())
             .unwrap_or(-1)
+    });
+    app.global::<Payload>().on_is_timeline_payload(|text| {
+        let t = text.as_str();
+        t.starts_with("media:")
+            || t.starts_with("sound:")
+            || t.starts_with("text:")
+            || t.starts_with("shape:")
+            || t.starts_with("filter:")
+            || t.starts_with("clip:")
+            || t.starts_with("file:")
     });
 
     // The picture the cursor carries, resolved through the same `incoming`

@@ -1042,12 +1042,12 @@ export component VideoPanel inherits VerticalLayout {
     in property <int> brush-tool;
     in property <float> brush-size;
     in property <bool> painting;
-    in property <string> animation-in-id;
-    in property <float> animation-in-duration;
-    in property <string> animation-out-id;
-    in property <float> animation-out-duration;
-    in property <string> animation-combo-id;
-    in property <float> animation-combo-duration;
+    in property <string> animation-in-id: root.selected.animation-in-id;
+    in property <float> animation-in-duration: root.selected.animation-in-duration;
+    in property <string> animation-out-id: root.selected.animation-out-id;
+    in property <float> animation-out-duration: root.selected.animation-out-duration;
+    in property <string> animation-combo-id: root.selected.animation-combo-id;
+    in property <float> animation-combo-duration: root.selected.animation-combo-duration;
     /// Whether the Mask section is here: the phone gives the mask a tool
     /// and a sheet of its own instead.
     in property <bool> mask-section: true;

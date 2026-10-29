@@ -170,22 +170,63 @@ impl MaskStore {
             .filter(|&at| at.abs_diff(wanted) <= REACH_MS)
     }
 
-    /// The model's mask nearest `seconds`, decoded, or `None` when that
-    /// instant is not analysed yet or its file cannot be read.
+    /// The model's mask at `seconds`, decoded with smooth temporal interpolation
+    /// between adjacent analysis frames, or `None` when that instant is not
+    /// analysed yet or its file cannot be read.
     pub fn mask_at(&self, seconds: f64) -> Option<Arc<Mask>> {
-        let millis = self.nearest_millis(seconds)?;
-        load(&mask_file(&self.dir, millis))
+        if self.times.is_empty() {
+            return None;
+        }
+        if self.times.len() == 1 {
+            let file = mask_file(&self.dir, self.times[0]);
+            return load(&file);
+        }
+        let wanted = (seconds.max(0.0) * 1000.0).round() as u64;
+        let index = self.times.partition_point(|&at| at < wanted);
+        let after = self.times.get(index).copied();
+        let before = index
+            .checked_sub(1)
+            .and_then(|i| self.times.get(i).copied());
+
+        match (before, after) {
+            (Some(b), Some(a)) if b != a && a.saturating_sub(b) <= REACH_MS => {
+                let mb = load(&mask_file(&self.dir, b))?;
+                let ma = load(&mask_file(&self.dir, a))?;
+                let t = ((wanted.saturating_sub(b)) as f32 / (a - b) as f32).clamp(0.0, 1.0);
+                Some(Arc::new(Mask::blend(&mb, &ma, t)))
+            }
+            (Some(b), _) if wanted.abs_diff(b) <= REACH_MS => load(&mask_file(&self.dir, b)),
+            (_, Some(a)) if wanted.abs_diff(a) <= REACH_MS => load(&mask_file(&self.dir, a)),
+            _ => None,
+        }
     }
 
-    /// The mask to cut with at `seconds`: the model's, with the cutout's
-    /// strokes painted on when it is custom, and softened by its feather.
+    /// The mask to cut with at `seconds`: the model's, with smooth temporal
+    /// interpolation between analysis frames, edge refinement (hair/contour
+    /// anti-aliasing), strokes painted on when it is custom, and softened by
+    /// its feather.
     /// `None` when the instant has no mask yet, and also when the model
     /// found nothing there and no stroke says otherwise: a picture with
     /// no subject shows as shot rather than vanishing.
     /// `aspect` is the source's width over its height, for round brushes.
     pub fn resolved(&self, seconds: f64, cutout: &Cutout, aspect: f32) -> Option<Arc<Mask>> {
-        let millis = self.nearest_millis(seconds)?;
-        let file = mask_file(&self.dir, millis);
+        if self.times.is_empty() {
+            return None;
+        }
+        let wanted = (seconds.max(0.0) * 1000.0).round() as u64;
+        let index = self.times.partition_point(|&at| at < wanted);
+        let after = self.times.get(index).copied();
+        let before = index
+            .checked_sub(1)
+            .and_then(|i| self.times.get(i).copied());
+
+        let nearest = [before, after]
+            .into_iter()
+            .flatten()
+            .min_by_key(|&at| at.abs_diff(wanted))
+            .filter(|&at| at.abs_diff(wanted) <= REACH_MS)?;
+
+        let file = mask_file(&self.dir, nearest);
         // The smart strokes' regions, opened once for the key and the
         // painting both: what is there changes as the brush model works
         // its way along the clip.
@@ -205,8 +246,8 @@ impl MaskStore {
             Vec::new()
         };
         let key = ResolvedKey {
-            file: file.clone(),
-            settings: settings_key(cutout, aspect, &region_stores, millis),
+            file: mask_file(&self.dir, wanted),
+            settings: settings_key(cutout, aspect, &region_stores, nearest),
         };
         if let Some(hit) = resolved_cache()
             .lock()
@@ -215,7 +256,15 @@ impl MaskStore {
         {
             return Some(hit);
         }
-        let auto = load(&file)?;
+        let auto = match (before, after) {
+            (Some(b), Some(a)) if b != a && a.saturating_sub(b) <= REACH_MS => {
+                let mb = load(&mask_file(&self.dir, b))?;
+                let ma = load(&mask_file(&self.dir, a))?;
+                let t = ((wanted.saturating_sub(b)) as f32 / (a - b) as f32).clamp(0.0, 1.0);
+                Arc::new(Mask::blend(&mb, &ma, t))
+            }
+            _ => load(&file)?,
+        };
         let corrected = cutout.mode == CutoutMode::Custom && !cutout.strokes.is_empty();
         if !corrected && auto.is_blank() {
             return None;
@@ -232,8 +281,13 @@ impl MaskStore {
             }
             _ => (*auto).clone(),
         };
-        let radius = cutout.feather as f32 * painted.width() as f32;
-        let mask = Arc::new(painted.blurred(radius));
+        let refined = painted.refined();
+        let radius = cutout.feather as f32 * refined.width() as f32;
+        let mask = Arc::new(if radius > 0.1 {
+            refined.blurred(radius)
+        } else {
+            refined
+        });
         if let Ok(mut cache) = resolved_cache().lock() {
             cache.put(key, Arc::clone(&mask));
         }

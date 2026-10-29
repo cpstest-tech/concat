@@ -526,85 +526,93 @@ component Clip inherits Rectangle {
 
     // ── the gesture ──────────────────────────────────────────────────────
     //
-    // The delta is taken in window coordinates — `absolute-position + mouse-x`
-    // — and not as `mouse-x - pressed-x`. A clip moves as it is dragged, so a
-    // local delta is measured against its own moving origin and cancels
-    // itself out; the drag stalls after the first frame. Same reasoning, and
-    // the same fix, as the workspace splitters.
-    touch := TouchArea {
-        enabled: !root.locked;
-        mouse-cursor: root.tool == TimelineTool.split ? MouseCursor.crosshair
-            : root.edge-at >= 0 ? MouseCursor.ew-resize : MouseCursor.grab;
+    // DragArea activates when the cursor travels past the drag threshold on the
+    // clip's body, initiating direct timeline drag-and-drop. The inner TouchArea
+    // handles clicks (selection, playhead scrub) and edge trimming.
+    drag := DragArea {
+        enabled: root.edge-at < 0 && !root.locked && root.tool == TimelineTool.select;
+        data: Payload.of("clip:\{root.item.id}");
+        drag-image: Payload.preview("clip:\{root.item.id}");
+        drag-image-offset-x: -8;
+        drag-image-offset-y: -4;
+        allow-copy: true;
+        allow-move: true;
 
-        changed mouse-x => {
-            if (self.has-hover && !self.pressed) { root.hovered(self.mouse-x); }
-        }
-        changed has-hover => {
-            if (!self.has-hover) { root.hover-ended(); }
-        }
+        touch := TouchArea {
+            enabled: !root.locked;
+            mouse-cursor: root.tool == TimelineTool.split ? MouseCursor.crosshair
+                : root.edge-at >= 0 ? MouseCursor.ew-resize : MouseCursor.grab;
 
-        pointer-event(event) => {
-            // The right button opens the menu and does nothing else — it must
-            // not also start a move, or the menu would appear over a clip that
-            // had already jumped. On the release, not the press: a press
-            // holds the pointer for this area until the button comes up, and
-            // a menu that opens under a held button is a menu whose first
-            // click goes to the wrong element.
-            if (event.button == PointerEventButton.right) {
-                if (event.kind == PointerEventKind.up) {
-                    root.context-requested();
-                }
-                return;
+            changed mouse-x => {
+                if (self.has-hover && !self.pressed) { root.hovered(self.mouse-x); }
             }
-            if (event.kind == PointerEventKind.down
-                && event.button == PointerEventButton.left) {
-                // The split tool cuts where the press lands and starts no
-                // gesture: nothing is selected or moved by it.
-                if (root.tool == TimelineTool.split) {
-                    root.split-at(self.mouse-x);
+            changed has-hover => {
+                if (!self.has-hover) { root.hover-ended(); }
+            }
+
+            pointer-event(event) => {
+                // The right button opens the menu and does nothing else — it must
+                // not also start a move, or the menu would appear over a clip that
+                // had already jumped. On the release, not the press: a press
+                // holds the pointer for this area until the button comes up, and
+                // a menu that opens under a held button is a menu whose first
+                // click goes to the wrong element.
+                if (event.button == PointerEventButton.right) {
+                    if (event.kind == PointerEventKind.up) {
+                        root.context-requested();
+                    }
                     return;
                 }
-                self.origin-x = self.absolute-position.x + self.mouse-x;
-                self.origin-y = self.absolute-position.y + self.mouse-y;
-                self.travelled = false;
-                self.on-edge = root.edge-at >= 0;
-                root.pressed(event.modifiers.shift || event.modifiers.control
-                    || event.modifiers.meta, root.edge-at);
-            } else if (event.kind == PointerEventKind.up
-                || event.kind == PointerEventKind.cancel) {
-                // Only a release ends it. Slint delivers `move` here too, so a
-                // plain `else` would end the gesture the moment it began.
-                root.released();
-                if (event.kind == PointerEventKind.up && !self.travelled && !self.on-edge
-                    && root.tool == TimelineTool.select) {
-                    root.clicked(self.mouse-x);
+                if (event.kind == PointerEventKind.down
+                    && event.button == PointerEventButton.left) {
+                    // The split tool cuts where the press lands and starts no
+                    // gesture: nothing is selected or moved by it.
+                    if (root.tool == TimelineTool.split) {
+                        root.split-at(self.mouse-x);
+                        return;
+                    }
+                    self.origin-x = self.absolute-position.x + self.mouse-x;
+                    self.origin-y = self.absolute-position.y + self.mouse-y;
+                    self.travelled = false;
+                    self.on-edge = root.edge-at >= 0;
+                    root.pressed(event.modifiers.shift || event.modifiers.control
+                        || event.modifiers.meta, root.edge-at);
+                } else if (event.kind == PointerEventKind.up
+                    || event.kind == PointerEventKind.cancel) {
+                    // Only a release ends it. Slint delivers `move` here too, so a
+                    // plain `else` would end the gesture the moment it began.
+                    root.released();
+                    if (event.kind == PointerEventKind.up && !self.travelled && !self.on-edge
+                        && root.tool == TimelineTool.select) {
+                        root.clicked(self.mouse-x);
+                    }
                 }
             }
-        }
 
-        moved => {
-            // Past a few pixels it is a drag, not a click, and the playhead
-            // stays where it was. Short of them it is nothing at all: a
-            // hand that shook on a click reported a move of a pixel or two,
-            // which snapped, or rounded, the clip somewhere else.
-            // https://github.com/jub0t/Concat/issues/247
-            if (Math.abs(self.absolute-position.x + self.mouse-x - self.origin-x) > 4px
-                || Math.abs(self.absolute-position.y + self.mouse-y - self.origin-y) > 4px) {
-                self.travelled = true;
+            moved => {
+                // Past a few pixels it is a drag, not a click, and the playhead
+                // stays where it was. Short of them it is nothing at all: a
+                // hand that shook on a click reported a move of a pixel or two,
+                // which snapped, or rounded, the clip somewhere else.
+                // https://github.com/jub0t/Concat/issues/247
+                if (Math.abs(self.absolute-position.x + self.mouse-x - self.origin-x) > 4px
+                    || Math.abs(self.absolute-position.y + self.mouse-y - self.origin-y) > 4px) {
+                    self.travelled = true;
+                }
+                if (self.travelled && root.tool == TimelineTool.select) {
+                    root.pointer-at(self.mouse-x);
+                    root.dragged(
+                        (self.absolute-position.x + self.mouse-x - self.origin-x)
+                            / root.px-per-second,
+                        self.absolute-position.y + self.mouse-y - self.origin-y);
+                }
             }
-            if (self.travelled && root.tool == TimelineTool.select) {
-                root.pointer-at(self.mouse-x);
-                root.dragged(
-                    (self.absolute-position.x + self.mouse-x - self.origin-x)
-                        / root.px-per-second,
-                    self.absolute-position.y + self.mouse-y - self.origin-y);
-            }
-        }
 
-        property <length> origin-x;
-        property <length> origin-y;
-        property <bool> travelled;
-        property <bool> on-edge;
+            property <length> origin-x;
+            property <length> origin-y;
+            property <bool> travelled;
+            property <bool> on-edge;
+        }
     }
 
     // ── the volume line ───────────────────────────────────────────────────
@@ -1160,6 +1168,7 @@ export component Lanes inherits Rectangle {
     /// — is where the drop would land, and that has to be recomputed as the
     /// pointer travels.
     callback drag-hovered(payload: string, seconds: float, y: length);
+    callback drag-hover-ended();
     /// Released here. Same three arguments: the drop is the hover, committed.
     callback dropped(payload: string, seconds: float, y: length);
     /// The answer to the last hover. `active` is also the verdict — false is
@@ -1265,7 +1274,7 @@ export component Lanes inherits Rectangle {
         }
     }
 
-    pure function seconds-at(x: length) -> float {
+    public pure function seconds-at(x: length) -> float {
         return root.scroll-left + x / root.px-per-second;
     }
     /// Pixels down the stack, from a y inside the lane area — which is what
@@ -1586,41 +1595,86 @@ export component Lanes inherits Rectangle {
         // where time is scrubbed.
         landing := DropArea {
             x: 0;
-            y: root.ruler-height;
+            y: 0;
             width: parent.width;
-            height: root.lanes-h;
+            height: root.ruler-height + root.lanes-h;
+
+            changed has-drag => {
+                if (!self.has-drag) {
+                    root.drag-hover-ended();
+                }
+            }
 
             can-drop(event) => {
-                // Rust is asked rather than told: it is the side that knows
-                // how long the media runs, what the payload names, and where
-                // the snap will pull the start to. It answers by publishing
-                // `drop`, which is both the ghost and the verdict — so this
-                // reads its own answer back, one statement later.
-                root.drag-hovered(Payload.text(event.data),
-                    root.seconds-at(event.position.x),
-                    root.stack-y(event.position.y));
-                return root.drop.active ? DragAction.copy : DragAction.none;
+                let payload-text = Payload.text(event.data);
+                if (Payload.is-timeline-payload(payload-text)) {
+                    let on-ruler = event.position.y < root.ruler-height + 12px;
+                    let y-arg = on-ruler ? -10px : root.stack-y(event.position.y - root.ruler-height);
+                    root.drag-hovered(payload-text,
+                        root.seconds-at(event.position.x),
+                        y-arg);
+                    return event.proposed-action;
+                }
+                return DragAction.none;
             }
 
             dropped(event) => {
-                root.dropped(Payload.text(event.data),
-                    root.seconds-at(event.position.x),
-                    root.stack-y(event.position.y));
-                return DragAction.copy;
+                let payload-text = Payload.text(event.data);
+                if (Payload.is-timeline-payload(payload-text)) {
+                    let on-ruler = event.position.y < root.ruler-height + 12px;
+                    let y-arg = on-ruler ? -10px : root.stack-y(event.position.y - root.ruler-height);
+                    root.dropped(payload-text,
+                        root.seconds-at(event.position.x),
+                        y-arg);
+                    return event.proposed-action;
+                }
+                return DragAction.none;
+            }
+        }
+
+        // ── visual indicator for new track creation ──
+        if root.drop.active && root.drop.is-new-track: Rectangle {
+            x: 0;
+            y: root.ruler-height + 2px;
+            width: parent.width;
+            height: 48px;
+            background: Theme.accent.with-alpha(0.15);
+            border-width: 1.5px;
+            border-color: Theme.accent;
+            border-radius: Theme.r-sm;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                alignment: start;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    height: 24px;
+                    width: new-track-badge.preferred-width + 20px;
+                    background: Theme.accent;
+                    border-radius: 12px;
+
+                    new-track-badge := Text {
+                        x: 10px;
+                        y: (parent.height - self.height) / 2;
+                        text: "+ Nuova traccia";
+                        color: Theme.on-accent;
+                        font-weight: 700;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                }
             }
         }
 
         // ── the ghost ────────────────────────────────────────────────────
         //
         // The clip the drop will make, drawn where it will make it. Gated on
-        // `has-drag` as well as on Rust's verdict: a drag that leaves the
-        // lanes gets an Exit and no further hover, so without it the ghost
-        // would sit there after the pointer had gone.
-        if root.drop.active && landing.has-drag: Rectangle {
+        // `root.drop.active`: Rust decides if a valid drop plan exists.
+        if root.drop.active: Rectangle {
             x: root.at(root.drop.start);
-            y: root.row-y(root.drop.row) + 4px;
+            y: root.drop.is-new-track ? (root.ruler-height + 5px) : (root.row-y(root.drop.row) + 4px);
             width: Math.max(2px, root.drop.duration * root.px-per-second);
-            height: Math.max(2px, root.tracks[root.drop.row].height - 10px);
+            height: Math.max(2px, root.drop.is-new-track ? 42px : (root.drop.row < root.tracks.length ? (root.tracks[root.drop.row].height - 10px) : 42px));
             border-radius: Theme.r-sm;
             // Alpha in the paints, not `opacity`: it makes Slint flatten
             // this element into an offscreen layer (as a rounded `clip` did
@@ -1634,7 +1688,7 @@ export component Lanes inherits Rectangle {
             // other target in the window — the band, a selected clip — is
             // outlined in it.
             border-width: 2px;
-            border-color: Theme.accent.with-alpha(0.85);
+            border-color: Theme.accent.with-alpha(0.9);
 
             Rectangle {
                 x: 0;
@@ -1651,7 +1705,7 @@ export component Lanes inherits Rectangle {
                     y: 0;
                     width: parent.width - 14px;
                     height: parent.height;
-                    text: root.drop.label;
+                    text: root.drop.is-new-track ? "+ Nuova traccia: \{root.drop.label}" : root.drop.label;
                     color: Theme.clip-ink.with-alpha(0.85);
                     font-size: Theme.fs-sm;
                     vertical-alignment: center;

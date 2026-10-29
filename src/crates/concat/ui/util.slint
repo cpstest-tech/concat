@@ -133,6 +133,9 @@ export global Payload {
 
     /// The tab index in a `tab:N:...` payload, or -1 for anything else.
     pure callback tab-index(text: string) -> int;
+
+    /// Whether this payload can be placed onto the timeline (media, sound, text, shape, filter, clip).
+    pure callback is-timeline-payload(text: string) -> bool;
 }
 
 export global Geom {

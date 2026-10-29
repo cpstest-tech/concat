@@ -126,6 +126,7 @@ pub(super) fn apply(
             duration,
             offset_y,
             above,
+            animations,
         } => {
             let style = style.unwrap_or_default();
             let duration = duration
@@ -154,6 +155,10 @@ pub(super) fn apply(
             );
             clip.offset_y = offset_y.unwrap_or(0.0).clamp(-MAX_OFFSET, MAX_OFFSET);
             clip.text = Some(style);
+            if let Some(mut animations) = animations {
+                animations.tidy(duration);
+                clip.animations = animations;
+            }
             timeline.clips.push(Arc::new(clip));
             Ok(Outcome {
                 created_id: Some(id),
@@ -744,7 +749,17 @@ pub(super) fn apply(
                 .retain(|clip| !doomed.contains(clip.id.as_str()));
             let applied = timeline.clips.len() != clip_count;
             if ripple && applied {
-                close_gaps(timeline, &removed);
+                let magnetic_tracks: HashSet<&str> = timeline
+                    .tracks
+                    .iter()
+                    .filter(|track| track.magnetic)
+                    .map(|track| track.id.as_str())
+                    .collect();
+                let magnetic_removed: Vec<(String, f64, f64)> = removed
+                    .into_iter()
+                    .filter(|(track, _, _)| magnetic_tracks.contains(track.as_str()))
+                    .collect();
+                close_gaps(timeline, &magnetic_removed);
             }
             Ok(Outcome {
                 created_id: None,
@@ -873,6 +888,7 @@ fn fresh_track(timeline: &mut Timeline, mint: &mut IdMint) -> String {
         id: id.clone(),
         visible: true,
         muted: false,
+        magnetic: false,
         extra: Default::default(),
     });
     id

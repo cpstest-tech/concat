@@ -279,26 +279,71 @@ impl Titles {
                     blend: clip.blend.clone(),
                     effects: {
                         let mut effects = clip.video_effects.clone();
-                        let entrance = clip.animations.entrance.as_ref()
-                            .filter(|animation| matches!(animation.id.as_str(), "word-reveal" | "character-reveal" | "typewriter"))
+                        let entrance = clip
+                            .animations
+                            .entrance
+                            .as_ref()
+                            .filter(|animation| {
+                                matches!(
+                                    animation.id.as_str(),
+                                    "word-reveal" | "character-reveal" | "typewriter"
+                                )
+                            })
                             .map(|animation| (animation, 0.0, false));
-                        let exit = clip.animations.exit.as_ref()
-                            .filter(|animation| matches!(animation.id.as_str(), "word-exit" | "character-exit" | "typewriter-reverse"))
-                            .map(|animation| (animation, (clip.duration - animation.duration).max(0.0), true));
+                        let exit = clip
+                            .animations
+                            .exit
+                            .as_ref()
+                            .filter(|animation| {
+                                matches!(
+                                    animation.id.as_str(),
+                                    "word-exit" | "character-exit" | "typewriter-reverse"
+                                )
+                            })
+                            .map(|animation| {
+                                (
+                                    animation,
+                                    (clip.duration - animation.duration).max(0.0),
+                                    true,
+                                )
+                            });
                         for (animation, start, is_exit) in [entrance, exit].into_iter().flatten() {
-                            let mut reveal = concat_project::model::AppliedFilter::new("concat.word-reveal");
+                            let mut reveal =
+                                concat_project::model::AppliedFilter::new("concat.word-reveal");
                             reveal.params.insert("duration".into(), animation.duration);
                             reveal.params.insert("start".into(), start);
-                            reveal.params.insert("snap".into(), if matches!(animation.id.as_str(), "typewriter" | "typewriter-reverse") { 1.0 } else { 0.0 });
-                            reveal.params.insert("steps".into(), f64::from(reveal_character_count(style_text(painting)).max(1) as u32));
-                            reveal.params.insert("reverse".into(), if is_exit { 1.0 } else { 0.0 });
+                            reveal.params.insert(
+                                "snap".into(),
+                                if matches!(
+                                    animation.id.as_str(),
+                                    "typewriter" | "typewriter-reverse"
+                                ) {
+                                    1.0
+                                } else {
+                                    0.0
+                                },
+                            );
+                            reveal.params.insert(
+                                "steps".into(),
+                                f64::from(
+                                    reveal_character_count(style_text(painting)).max(1) as u32
+                                ),
+                            );
+                            reveal
+                                .params
+                                .insert("reverse".into(), if is_exit { 1.0 } else { 0.0 });
                             effects.push(reveal);
                         }
-                        if let Some(animation) = clip.animations.combo.as_ref()
+                        if let Some(animation) = clip
+                            .animations
+                            .combo
+                            .as_ref()
                             .filter(|animation| animation.id == "wave-loop")
                         {
-                            let mut wave = concat_project::model::AppliedFilter::new("concat.text-wave");
-                            wave.params.insert("speed".into(), 1.0 / animation.duration.max(0.05));
+                            let mut wave =
+                                concat_project::model::AppliedFilter::new("concat.text-wave");
+                            wave.params
+                                .insert("speed".into(), 1.0 / animation.duration.max(0.05));
                             effects.push(wave);
                         }
                         effects
@@ -335,11 +380,18 @@ impl Titles {
                     // A shape has no words to reveal one at a time.
                     reveal_map: match painting {
                         Painting::Title(_) => {
-                            let character_reveal = clip.animations.entrance.as_ref().is_some_and(
-                                |animation| matches!(animation.id.as_str(), "character-reveal" | "typewriter"),
-                            ) || clip.animations.exit.as_ref().is_some_and(
-                                |animation| matches!(animation.id.as_str(), "character-exit" | "typewriter-reverse"),
-                            );
+                            let character_reveal =
+                                clip.animations.entrance.as_ref().is_some_and(|animation| {
+                                    matches!(
+                                        animation.id.as_str(),
+                                        "character-reveal" | "typewriter"
+                                    )
+                                }) || clip.animations.exit.as_ref().is_some_and(|animation| {
+                                    matches!(
+                                        animation.id.as_str(),
+                                        "character-exit" | "typewriter-reverse"
+                                    )
+                                });
                             Some(Arc::clone(if character_reveal {
                                 &art.reveal_characters
                             } else {
@@ -389,7 +441,12 @@ impl Titles {
             block: (rendered.block_width, rendered.block_height),
             offset: (rendered.block_dx, rendered.block_dy),
             reveal: reveal_of(&rendered.words, width, height),
-            reveal_characters: character_reveal_of(style_text(painting), &rendered.words, width, height),
+            reveal_characters: character_reveal_of(
+                style_text(painting),
+                &rendered.words,
+                width,
+                height,
+            ),
         };
         let frame = Arc::new(
             Frame::from_rgba(rendered.width, rendered.height, rendered.rgba)
@@ -452,7 +509,12 @@ impl Titles {
             block: (rendered.block_width, rendered.block_height),
             offset: (rendered.block_dx, rendered.block_dy),
             reveal: reveal_of(&rendered.words, width, height),
-            reveal_characters: character_reveal_of(style_text(painting), &rendered.words, width, height),
+            reveal_characters: character_reveal_of(
+                style_text(painting),
+                &rendered.words,
+                width,
+                height,
+            ),
         };
         let words: Vec<String> = rendered
             .words
@@ -587,7 +649,20 @@ fn read_block(side: &Path, text: &str, width: u32, height: u32) -> Option<Art> {
         ),
         offset: (offset("x"), offset("y")),
         reveal: Arc::new(RevealMap::from_rects(width, height, &rects)),
-        reveal_characters: character_reveal_of(text, &rects.iter().map(|&(x, y, width, height)| WordRect { x, y, width, height }).collect::<Vec<_>>(), width, height),
+        reveal_characters: character_reveal_of(
+            text,
+            &rects
+                .iter()
+                .map(|&(x, y, width, height)| WordRect {
+                    x,
+                    y,
+                    width,
+                    height,
+                })
+                .collect::<Vec<_>>(),
+            width,
+            height,
+        ),
     })
 }
 
@@ -717,6 +792,7 @@ mod tests {
                 style: None,
                 duration: Some(3.0),
                 offset_y: None,
+                animations: None,
             })
             .expect("a title is added")
             .created_id
@@ -762,6 +838,7 @@ mod tests {
                 style: None,
                 duration: Some(3.0),
                 offset_y: Some(0.3),
+                animations: None,
             })
             .expect("a title is added")
             .created_id

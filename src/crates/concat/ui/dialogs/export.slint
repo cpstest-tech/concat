@@ -80,6 +80,8 @@ export struct ExportData {
     done-size: string,
     /// nothing on the timeline to export
     empty: bool,
+    thumbnail: image,
+    has-thumbnail: bool,
 }
 
 // One tile of the summary block.
@@ -275,6 +277,7 @@ component OutputSection inherits DialogSection {
     callback codec-changed(index: int);
     callback ten-bit-changed(on: bool);
     callback hdr-changed(on: bool);
+    callback match-best-media();
 
     title: I18n.t("export.output");
 
@@ -366,6 +369,19 @@ component OutputSection inherits DialogSection {
                 px-per-step: 4px;
                 unit: "Mbps";
                 changed(value) => { root.bitrate-changed(value); }
+            }
+        }
+    }
+
+    DialogRow {
+        label: "";
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                label: "Corrisponde al miglior video del progetto";
+                ghost: true;
+                glyph: Glyph.sparkle;
+                clicked => { root.match-best-media(); }
             }
         }
     }
@@ -463,49 +479,31 @@ component ExportFooter inherits VerticalLayout {
         }
     }
 
-    if root.running: Progress { value: root.data.progress; live: true; }
+    if root.running && root.narrow && root.data.has-thumbnail: Rectangle {
+        height: 140px;
+        border-radius: Theme.r;
+        background: Theme.raised;
+        border-width: 1px;
+        border-color: Theme.line;
+        clip: true;
 
-    if root.running: HorizontalLayout {
+        Image {
+            width: 100%;
+            height: 100%;
+            source: root.data.thumbnail;
+            image-fit: contain;
+        }
+    }
+
+    if root.running && root.narrow: Progress { value: root.data.progress; live: true; }
+
+    if root.running && root.narrow: HorizontalLayout {
         alignment: start;
         Button {
             label: I18n.t("export.cancelExport");
             glyph: Glyph.close;
             ghost: true;
             clicked => { root.cancel(); }
-        }
-    }
-
-    if root.data.phase == ExportPhase.done: HorizontalLayout {
-        spacing: 8px;
-        alignment: start;
-
-        VerticalLayout {
-            alignment: center;
-            Icon { glyph: Glyph.check; size: 15px; tint: Theme.green; }
-        }
-
-        Text {
-            text: I18n.t1("export.exported", "\{root.data.done-size}");
-            color: Theme.green;
-            font-size: Theme.fs;
-            font-weight: Theme.weight-title;
-            vertical-alignment: center;
-        }
-    }
-
-    if root.data.phase == ExportPhase.done: HorizontalLayout {
-        spacing: 6px;
-        alignment: start;
-
-        if !root.phone: Button {
-            label: I18n.t("export.showInFolder");
-            glyph: Glyph.import;
-            clicked => { root.reveal(); }
-        }
-        Button {
-            label: I18n.t("export.exportAgain");
-            ghost: true;
-            clicked => { root.again(); }
         }
     }
 
@@ -529,7 +527,7 @@ component ExportFooter inherits VerticalLayout {
 // Lays its children out at most `max` wide, centred in whatever width it
 // is given: a sheet the width of a 4K monitor is not read across.
 component Measure inherits HorizontalLayout {
-    in property <length> max: 1180px;
+    in property <length> max: 1800px;
 
     Rectangle { horizontal-stretch: 1; }
     VerticalLayout {
@@ -567,6 +565,9 @@ export component ExportDialog inherits Rectangle {
     callback ten-bit-changed(on: bool);
     callback hdr-changed(on: bool);
     callback bitrate-changed(mbps: float);
+    callback match-best-media();
+    callback open-file();
+    callback open-in-editor();
     callback begin();
     callback cancel();
     callback reveal();
@@ -688,7 +689,239 @@ export component ExportDialog inherits Rectangle {
                     padding-top: 8px;
                     padding-bottom: 16px;
 
-                    if root.running || root.columns == 1: VerticalLayout {
+                    if root.data.phase == ExportPhase.done: VerticalLayout {
+                        alignment: center;
+                        spacing: 20px;
+                        padding-top: 36px;
+                        padding-bottom: 36px;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 12px;
+                            VerticalLayout {
+                                alignment: center;
+                                Icon { glyph: Glyph.check; size: 28px; tint: Theme.green; }
+                            }
+                            Text {
+                                text: "Il video è pronto";
+                                font-size: Theme.fs-xl;
+                                font-weight: Theme.weight-title;
+                                color: Theme.fg;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        if root.data.has-thumbnail: HorizontalLayout {
+                            alignment: center;
+                            Rectangle {
+                                width: Math.min(root.width - 64px, 560px);
+                                height: 320px;
+                                border-radius: Theme.r;
+                                background: Theme.raised;
+                                border-width: 1px;
+                                border-color: Theme.line-strong;
+                                clip: true;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.data.thumbnail;
+                                    image-fit: contain;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            Text {
+                                text: I18n.t1("export.exported", "\{root.data.done-size}");
+                                color: Theme.fg-muted;
+                                font-size: Theme.fs;
+                            }
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 14px;
+
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 14px;
+
+                                Button {
+                                    primary: true;
+                                    large: true;
+                                    min-width: 180px;
+                                    label: "Apri";
+                                    glyph: Glyph.play;
+                                    clicked => { root.open-in-editor(); }
+                                }
+
+                                Button {
+                                    large: true;
+                                    min-width: 180px;
+                                    label: "Apri con lettore esterno";
+                                    glyph: Glyph.export;
+                                    clicked => { root.open-file(); }
+                                }
+
+                                if !root.phone: Button {
+                                    large: true;
+                                    min-width: 180px;
+                                    label: "Mostra nella cartella";
+                                    glyph: Glyph.import;
+                                    clicked => { root.reveal(); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 18px;
+
+                                Button {
+                                    ghost: true;
+                                    label: "Modifica impostazioni";
+                                    clicked => { root.again(); }
+                                }
+
+                                Button {
+                                    ghost: true;
+                                    label: I18n.t("common.close");
+                                    clicked => { root.closed(); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Dedicated Wide Layout during Rendering ──
+                    if root.data.phase != ExportPhase.done && root.running: HorizontalLayout {
+                        spacing: 24px;
+                        padding-top: 12px;
+
+                        // Large live video preview player
+                        VerticalLayout {
+                            horizontal-stretch: 6;
+                            spacing: 8px;
+
+                            Rectangle {
+                                height: Math.min(root.height - 240px, 480px);
+                                border-radius: Theme.r;
+                                background: #000000;
+                                border-width: 1.5px;
+                                border-color: Theme.line-strong;
+                                clip: true;
+
+                                Image {
+                                    width: 100%;
+                                    height: 100%;
+                                    source: root.data.has-thumbnail ? root.data.thumbnail : root.preview-frame;
+                                    image-fit: contain;
+                                }
+
+                                // Rendering overlay badge
+                                Rectangle {
+                                    x: 14px;
+                                    y: 14px;
+                                    height: 26px;
+                                    width: render-badge.preferred-width + 24px;
+                                    background: #000000cc;
+                                    border-radius: 13px;
+                                    border-width: 1px;
+                                    border-color: Theme.accent.with-alpha(0.6);
+
+                                    HorizontalLayout {
+                                        padding-left: 10px;
+                                        padding-right: 10px;
+                                        spacing: 6px;
+                                        alignment: center;
+                                        Rectangle {
+                                            y: (parent.height - self.height) / 2;
+                                            width: 8px;
+                                            height: 8px;
+                                            border-radius: 4px;
+                                            background: Theme.accent;
+                                        }
+                                        render-badge := Text {
+                                            text: "RENDERING VIDEO";
+                                            color: #ffffff;
+                                            font-size: 11px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                Text {
+                                    text: root.data.format;
+                                    color: Theme.fg-dim;
+                                    font-size: Theme.fs-sm;
+                                    font-family: Theme.font-technical;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                Text {
+                                    text: root.data.stage;
+                                    color: Theme.accent;
+                                    font-size: Theme.fs-sm;
+                                    font-weight: 600;
+                                }
+                            }
+                        }
+
+                        // Rendering details card
+                        VerticalLayout {
+                            horizontal-stretch: 4;
+                            spacing: 16px;
+                            alignment: start;
+
+                            SummarySection { first: true; data: root.data; }
+
+                            Rectangle {
+                                border-radius: Theme.r;
+                                background: Theme.raised;
+                                border-width: 1px;
+                                border-color: Theme.line;
+
+                                VerticalLayout {
+                                    padding: 16px;
+                                    spacing: 12px;
+                                    HorizontalLayout {
+                                        Text {
+                                            text: "Avanzamento";
+                                            color: Theme.fg;
+                                            font-weight: Theme.weight-title;
+                                            font-size: Theme.fs;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Text {
+                                            text: "\{Math.round(root.data.progress * 100)}%";
+                                            color: Theme.accent;
+                                            font-weight: 700;
+                                            font-size: Theme.fs-lg;
+                                        }
+                                    }
+                                    Progress { value: root.data.progress; live: true; }
+                                    Text {
+                                        text: root.data.path;
+                                        color: Theme.fg-dim;
+                                        font-family: Theme.font-technical;
+                                        font-size: Theme.fs-sm;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            Button {
+                                label: I18n.t("export.cancelExport");
+                                glyph: Glyph.close;
+                                ghost: true;
+                                clicked => { root.cancel(); }
+                            }
+                        }
+                    }
+
+                    if root.data.phase != ExportPhase.done && !root.running && root.columns == 1: VerticalLayout {
                         SummarySection { first: true; data: root.data; }
                         if !root.running: DestinationSection {
                             data: root.data;
@@ -703,12 +936,13 @@ export component ExportDialog inherits Rectangle {
                             codec-changed(index) => { root.codec-changed(index); }
                             ten-bit-changed(on) => { root.ten-bit-changed(on); }
                             hdr-changed(on) => { root.hdr-changed(on); }
+                            match-best-media => { root.match-best-media(); }
                         }
                     }
 
                     // Two columns: the picture, what it is and where it
                     // goes on the left; how it is written on the right.
-                    if !root.running && root.columns == 2: HorizontalLayout {
+                    if root.data.phase != ExportPhase.done && !root.running && root.columns == 2: HorizontalLayout {
                         spacing: 12px;
 
                         VerticalLayout {
@@ -742,13 +976,14 @@ export component ExportDialog inherits Rectangle {
                                 codec-changed(index) => { root.codec-changed(index); }
                                 ten-bit-changed(on) => { root.ten-bit-changed(on); }
                                 hdr-changed(on) => { root.hdr-changed(on); }
+                                match-best-media => { root.match-best-media(); }
                             }
                         }
                     }
 
                     // Three columns: the picture and what it is; how it is
                     // written; where it goes.
-                    if !root.running && root.columns == 3: HorizontalLayout {
+                    if root.data.phase != ExportPhase.done && !root.running && root.columns == 3: HorizontalLayout {
                         spacing: 12px;
 
                         VerticalLayout {
@@ -776,6 +1011,7 @@ export component ExportDialog inherits Rectangle {
                                 codec-changed(index) => { root.codec-changed(index); }
                                 ten-bit-changed(on) => { root.ten-bit-changed(on); }
                                 hdr-changed(on) => { root.hdr-changed(on); }
+                                match-best-media => { root.match-best-media(); }
                             }
                         }
 
@@ -801,7 +1037,7 @@ export component ExportDialog inherits Rectangle {
             }
 
             // The groups pad themselves; the footer is padded to match.
-            Measure {
+            if root.data.phase != ExportPhase.done: Measure {
                 padding: 14px;
 
                 ExportFooter {

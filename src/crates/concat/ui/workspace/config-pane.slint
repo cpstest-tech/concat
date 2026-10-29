@@ -715,6 +715,7 @@ export component ConfigPane inherits Rectangle {
                     set(field, value) => { root.clip-set(field, value); }
                     set-text(field, value) => { root.clip-set-text(field, value); }
                     set-colour(field, value) => { root.clip-set-colour(field, value); }
+                    animation-set(slot, id, duration) => { root.clip-animation-set(slot, id, duration); }
                     commit => { root.clip-commit(); }
                     import-font => { root.import-font(); }
                     set-default => { root.text-style-default(); }

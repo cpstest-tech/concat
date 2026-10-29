@@ -77,6 +77,7 @@ export global Editor {
     in-out property <int> media-count-processed;
     in-out property <int> media-selected-count;
     in-out property <bool> importing;
+    in-out property <float> import-progress;
     /// What the bin is narrowed to. Rust's, so the editor can point the
     /// bin at a file it just made; the sidebar reports a pick through
     /// `media-filter-changed` and reads the answer back from here.
@@ -451,8 +452,9 @@ export global Editor {
     /// model: the ghost is Rust's answer to the hover, not the panel's guess.
     in-out property <DropData> drop;
     callback drag-hovered(payload: string, seconds: float, y: length);
+    callback drag-hover-ended();
     callback dropped(payload: string, seconds: float, y: length);
-    callback track-flag-changed(index: int, visible: bool, muted: bool, locked: bool);
+    callback track-flag-changed(index: int, visible: bool, muted: bool, locked: bool, magnetic: bool);
     callback track-sized(index: int, size: TrackSize);
     callback track-removed(index: int);
     /// A tab dragged to a new place in the strip. `to` is counted with the

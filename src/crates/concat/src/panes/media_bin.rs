@@ -19,7 +19,7 @@ use concat_project::Command;
 use concat_project::model::{self, MediaItem, MediaOrigin, Project};
 
 use crate::format::wave_path;
-use crate::host::{probe_error, spawn_in_project};
+use crate::host::{on_ui_in_project, probe_error, project_epoch, spawn_in_project};
 use crate::i18n::{t, tf};
 use crate::panes::Msg;
 use crate::studio::Studio;
@@ -49,6 +49,8 @@ pub enum MediaMsg {
     RemoveSelected,
     /// Files picked, dropped or handed over by the platform.
     Import(Vec<PathBuf>),
+    /// Progress fraction during probing.
+    ImportProgress(f32),
     /// The import's worker is done probing.
     Imported(Vec<Result<MediaSummary, String>>),
     /// Everything selected goes on the timeline at the playhead.
@@ -66,6 +68,8 @@ pub struct MediaBin {
     pub filter: MediaFilter,
     /// 0 = Added, 1 = Name, 2 = Kind
     pub sort: usize,
+    pub importing: bool,
+    pub import_progress: f32,
     /// The cards' pictures by media id.
     pub thumbs: HashMap<String, slint::Image>,
     /// A card's waveform path by media id, with the peaks it was drawn
@@ -83,6 +87,8 @@ impl Default for MediaBin {
             selected: HashSet::new(),
             filter: MediaFilter::All,
             sort: 0,
+            importing: false,
+            import_progress: 0.0,
             thumbs: HashMap::new(),
             waves: Default::default(),
         }
@@ -151,17 +157,31 @@ impl MediaBin {
                 if paths.is_empty() || studio.session.is_none() {
                     return;
                 }
+                self.importing = true;
+                self.import_progress = 0.0;
+                let total = paths.len() as f32;
+                let epoch = project_epoch();
                 spawn_in_project(
                     move || {
-                        paths
-                            .iter()
-                            .map(|path| media::probe(&path.to_string_lossy()))
-                            .collect::<Vec<_>>()
+                        let mut results = Vec::with_capacity(paths.len());
+                        for (i, path) in paths.iter().enumerate() {
+                            results.push(media::probe(&path.to_string_lossy()));
+                            let progress = (i + 1) as f32 / total;
+                            on_ui_in_project(epoch, move |studio, _, _| {
+                                studio.handle(Msg::Media(MediaMsg::ImportProgress(progress)));
+                            });
+                        }
+                        results
                     },
                     |studio, _, _, results| studio.handle(Msg::Media(MediaMsg::Imported(results))),
                 );
             }
+            MediaMsg::ImportProgress(progress) => {
+                self.import_progress = progress;
+            }
             MediaMsg::Imported(results) => {
+                self.importing = false;
+                self.import_progress = 1.0;
                 let mut commands = Vec::new();
                 let mut failures = Vec::new();
                 for result in results {

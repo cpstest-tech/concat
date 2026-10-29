@@ -314,6 +314,7 @@ component CategoryRow inherits Rectangle {
 // pixel between panel sizes is not visible.
 component ImportButton inherits Rectangle {
     in property <bool> busy;
+    in property <float> progress: 0.0;
     // Reused by the templates page as "save as template", so the words and
     // the mark are parameters with the import ones as defaults.
     in property <string> label: I18n.t("mediaPane.import");
@@ -354,9 +355,18 @@ component ImportButton inherits Rectangle {
     border-radius: Theme.r;
     border-color: (touch.has-hover && !root.busy) ? Theme.accent : Theme.line-strong;
     background: root.ground;
-    opacity: root.busy ? 0.4 : 1.0;
+    opacity: root.busy ? 0.8 : 1.0;
+    clip: true;
 
     animate background, border-color { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+
+    if root.busy: Rectangle {
+        x: 0;
+        y: parent.height - 3px;
+        width: parent.width * Math.clamp(root.progress > 0 ? root.progress : 1.0, 0, 1);
+        height: 3px;
+        background: Theme.accent;
+    }
 
     HorizontalLayout {
         alignment: center;
@@ -1805,6 +1815,7 @@ export component MediaPane inherits Rectangle {
     /// how many of the whole bin are selected, not how many of `items` are
     in property <int> selected-count;
     in property <bool> importing;
+    in property <float> import-progress;
 
     /// What the bin is narrowed to. Rust's: a row of the sidebar reports
     /// its pick and the answer comes back here, so the editor can narrow
@@ -2471,6 +2482,7 @@ export component MediaPane inherits Rectangle {
                         height: Theme.h;
                         horizontal-stretch: 0;
                         busy: root.importing;
+                        progress: root.import-progress;
                         clicked => { root.import-media(); }
                     }
                     Rectangle { horizontal-stretch: 1; }

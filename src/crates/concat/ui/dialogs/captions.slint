@@ -135,7 +135,7 @@ export component CaptionsDialog inherits Modal {
                 data: row;
                 edited(id, text, start, end) => { root.edit-row(id, text, start, end); }
             }
-            Button { label: I18n.t("common.close"); primary: true; clicked => { root.editor-closed(); } }
+            Button { label: I18n.t("common.apply"); primary: true; clicked => { root.editor-closed(); } }
         }
         if !root.data.editor-open: VerticalLayout {
         if !root.data.running && !root.from-voice: DialogSection {

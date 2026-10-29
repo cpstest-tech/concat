@@ -102,6 +102,7 @@ export component Seat inherits Rectangle {
             count-processed: Editor.media-count-processed;
             selected-count: Editor.media-selected-count;
             importing: Editor.importing;
+            import-progress: Editor.import-progress;
             filter: Editor.media-filter;
             jump-token: Editor.media-jump-token;
 
@@ -455,9 +456,10 @@ export component Seat inherits Rectangle {
             drag-hovered(payload, seconds, row) => {
                 Editor.drag-hovered(payload, seconds, row);
             }
+            drag-hover-ended => { Editor.drag-hover-ended(); }
             dropped(payload, seconds, row) => { Editor.dropped(payload, seconds, row); }
-            track-flag-changed(index, visible, muted, locked) => {
-                Editor.track-flag-changed(index, visible, muted, locked);
+            track-flag-changed(index, visible, muted, locked, magnetic) => {
+                Editor.track-flag-changed(index, visible, muted, locked, magnetic);
             }
             track-sized(index, size) => { Editor.track-sized(index, size); }
             track-removed(index) => { Editor.track-removed(index); }

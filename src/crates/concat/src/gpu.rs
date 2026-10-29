@@ -84,6 +84,23 @@ impl Gpu {
             force_fallback_adapter: software,
             ..Default::default()
         }))
+        .or_else(|error| {
+            if software {
+                log::warn!(
+                    "software rasteriser requested, but none available ({error}); falling back to hardware adapter"
+                );
+                // Remove CONCAT_GPU so downstream headless compositors also use the hardware GPU
+                // instead of failing when no software rasteriser is installed.
+                unsafe { std::env::remove_var("CONCAT_GPU"); }
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    force_fallback_adapter: false,
+                    ..Default::default()
+                }))
+            } else {
+                Err(error)
+            }
+        })
         .ok()?;
         // This is not always a GPU. wgpu ranks a CPU adapter last but never
         // leaves it out, so on a machine whose hardware it will not drive -

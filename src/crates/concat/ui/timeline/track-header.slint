@@ -216,7 +216,7 @@ component Header inherits Rectangle {
     in property <TrackData> track;
     in property <bool> removable;
 
-    callback flag-changed(visible: bool, muted: bool, locked: bool);
+    callback flag-changed(visible: bool, muted: bool, locked: bool, magnetic: bool);
     callback sized(size: TrackSize);
     callback removed();
 
@@ -266,7 +266,7 @@ component Header inherits Rectangle {
                     checked: root.track.locked;
                     clicked => {
                         root.flag-changed(root.track.visible, root.track.muted,
-                            !root.track.locked);
+                            !root.track.locked, root.track.magnetic);
                     }
                 }
             }
@@ -284,7 +284,7 @@ component Header inherits Rectangle {
                     checked: !root.track.visible;
                     clicked => {
                         root.flag-changed(!root.track.visible, root.track.muted,
-                            root.track.locked);
+                            root.track.locked, root.track.magnetic);
                     }
                 }
             }
@@ -299,7 +299,22 @@ component Header inherits Rectangle {
                     checked: root.track.muted;
                     clicked => {
                         root.flag-changed(root.track.visible, !root.track.muted,
-                            root.track.locked);
+                            root.track.locked, root.track.magnetic);
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: start;
+                IconButton {
+                    glyph: Glyph.magnet;
+                    label: root.track.magnetic ? I18n.t("tray.magneticTimelineDeletingTrimming") : I18n.t("common.magneticTimeline");
+                    icon-size: 12px;
+                    idle: Theme.fg;
+                    checked: root.track.magnetic;
+                    clicked => {
+                        root.flag-changed(root.track.visible, root.track.muted,
+                            root.track.locked, !root.track.magnetic);
                     }
                 }
             }
@@ -332,7 +347,7 @@ export component TrackHeaders inherits Rectangle {
     /// inside 0..overflow.
     callback scrolled(offset: length);
 
-    callback flag-changed(index: int, visible: bool, muted: bool, locked: bool);
+    callback flag-changed(index: int, visible: bool, muted: bool, locked: bool, magnetic: bool);
     callback sized(index: int, size: TrackSize);
     callback removed(index: int);
 
@@ -368,8 +383,8 @@ export component TrackHeaders inherits Rectangle {
             track: track;
             removable: root.tracks.length > 1;
 
-            flag-changed(visible, muted, locked) => {
-                root.flag-changed(index, visible, muted, locked);
+            flag-changed(visible, muted, locked, magnetic) => {
+                root.flag-changed(index, visible, muted, locked, magnetic);
             }
             sized(size) => { root.sized(index, size); }
             removed => { root.removed(index); }

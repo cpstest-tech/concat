@@ -771,6 +771,7 @@ export component PhoneEditor inherits Rectangle {
                 drag-hovered(payload, seconds, row) => {
                     Editor.drag-hovered(payload, seconds, row);
                 }
+                drag-hover-ended => { Editor.drag-hover-ended(); }
                 dropped(payload, seconds, row) => { Editor.dropped(payload, seconds, row); }
                 // How wide the lanes are decides which clips Rust sends,
                 // and where their middle is.
@@ -1397,6 +1398,7 @@ export component PhoneEditor inherits Rectangle {
             brush-tool: Editor.brush-tool;
             brush-size: Editor.brush-size;
             painting: Editor.painting;
+            animation-set(slot, id, duration) => { Editor.clip-animation-set(slot, id, duration); }
             set(field, value) => { Editor.clip-set(field, value); }
             commit => { Editor.clip-commit(); }
             chain-add(id) => { Editor.chain-add(false, id); }
@@ -1487,6 +1489,7 @@ export component PhoneEditor inherits Rectangle {
             set(field, value) => { Editor.clip-set(field, value); }
             set-text(field, value) => { Editor.clip-set-text(field, value); }
             set-colour(field, value) => { Editor.clip-set-colour(field, value); }
+            animation-set(slot, id, duration) => { Editor.clip-animation-set(slot, id, duration); }
             commit => { Editor.clip-commit(); }
             import-font => { Editor.import-font(); }
             set-default => { Editor.text-style-default(); }

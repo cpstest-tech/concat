@@ -85,6 +85,7 @@ pub(super) fn apply(
                                     id: id.clone(),
                                     visible: true,
                                     muted: false,
+                                    magnetic: false,
                                     extra: Default::default(),
                                 },
                             );

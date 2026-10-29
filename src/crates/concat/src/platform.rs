@@ -126,7 +126,10 @@ fn reapply_ui_scale() {
 #[cfg(not(target_os = "android"))]
 struct DropHandler {
     pending: Vec<PathBuf>,
-    on_dropped: Box<dyn Fn(Vec<PathBuf>)>,
+    on_dropped: Box<dyn Fn(Vec<PathBuf>, Option<(f32, f32)>)>,
+    hovering_file: Option<PathBuf>,
+    on_file_hovered: Box<dyn Fn(PathBuf, (f32, f32))>,
+    on_hover_ended: Box<dyn Fn()>,
     /// Paths a Wayland drop delivered, from the listener's thread.
     arrived: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
     /// The Wayland listener, once the window is up and is a Wayland one;
@@ -197,13 +200,18 @@ fn edge_cursor(edge: ResizeDirection) -> CursorIcon {
 #[cfg(not(target_os = "android"))]
 impl DropHandler {
     fn new(
-        on_dropped: impl Fn(Vec<PathBuf>) + 'static,
+        on_dropped: impl Fn(Vec<PathBuf>, Option<(f32, f32)>) + 'static,
+        on_file_hovered: impl Fn(PathBuf, (f32, f32)) + 'static,
+        on_hover_ended: impl Fn() + 'static,
         on_pressed_away: impl Fn() + 'static,
         on_focused: impl Fn() + 'static,
     ) -> Self {
         Self {
             pending: Vec::new(),
             on_dropped: Box::new(on_dropped),
+            hovering_file: None,
+            on_file_hovered: Box::new(on_file_hovered),
+            on_hover_ended: Box::new(on_hover_ended),
             arrived: Default::default(),
             wayland: None,
             wayland_tried: false,
@@ -272,7 +280,21 @@ impl CustomApplicationHandler for DropHandler {
         }
         match event {
             WindowEvent::ScaleFactorChanged { .. } => reapply_ui_scale(),
-            WindowEvent::DroppedFile(path) => self.pending.push(path.clone()),
+            WindowEvent::DroppedFile(path) => {
+                self.hovering_file = None;
+                (self.on_hover_ended)();
+                self.pending.push(path.clone());
+            }
+            WindowEvent::HoveredFile(path) => {
+                self.hovering_file = Some(path.clone());
+                if let Some(cursor) = self.cursor {
+                    (self.on_file_hovered)(path.clone(), cursor);
+                }
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.hovering_file = None;
+                (self.on_hover_ended)();
+            }
             // Back at the front, after Explorer or the file manager: what a
             // dropped file is to an import, a return is to a look for one
             // that went away while the window was open.
@@ -282,7 +304,11 @@ impl CustomApplicationHandler for DropHandler {
                     .map(|window| f64::from(window.scale_factor()))
                     .or_else(|| winit_window.map(|window| window.scale_factor()))
                     .unwrap_or(1.0);
-                self.cursor = Some(((position.x / scale) as f32, (position.y / scale) as f32));
+                let cursor = ((position.x / scale) as f32, (position.y / scale) as f32);
+                self.cursor = Some(cursor);
+                if let Some(path) = &self.hovering_file {
+                    (self.on_file_hovered)(path.clone(), cursor);
+                }
                 if let Some(window) = winit_window.filter(|_| self.edges) {
                     let size = window.inner_size();
                     let edge = (window.is_resizable()
@@ -340,7 +366,7 @@ impl CustomApplicationHandler for DropHandler {
             self.pending.append(&mut arrived);
         }
         if !self.pending.is_empty() {
-            (self.on_dropped)(std::mem::take(&mut self.pending));
+            (self.on_dropped)(std::mem::take(&mut self.pending), self.cursor);
         }
         EventResult::Propagate
     }
@@ -413,7 +439,9 @@ pub fn phone() -> bool {
 /// the same way each time the window is brought back to the front.
 #[cfg(not(target_os = "android"))]
 pub fn select_backend(
-    on_files_dropped: impl Fn(Vec<PathBuf>) + 'static,
+    on_files_dropped: impl Fn(Vec<PathBuf>, Option<(f32, f32)>) + 'static,
+    on_file_hovered: impl Fn(PathBuf, (f32, f32)) + 'static,
+    on_hover_ended: impl Fn() + 'static,
     on_pressed_away: impl Fn() + 'static,
     on_focused: impl Fn() + 'static,
 ) -> Result<Option<Gpu>, PlatformError> {
@@ -445,6 +473,8 @@ pub fn select_backend(
         .backend_name("winit".into())
         .with_winit_custom_application_handler(DropHandler::new(
             on_files_dropped,
+            on_file_hovered,
+            on_hover_ended,
             on_pressed_away,
             on_focused,
         ));
@@ -652,7 +682,9 @@ pub fn is_maximized(window: &slint::Window) -> bool {
 /// desktop's and is never called.
 #[cfg(target_os = "android")]
 pub fn select_backend(
-    on_files_dropped: impl Fn(Vec<PathBuf>) + 'static,
+    on_files_dropped: impl Fn(Vec<PathBuf>, Option<(f32, f32)>) + 'static,
+    _on_file_hovered: impl Fn(PathBuf, (f32, f32)) + 'static,
+    _on_hover_ended: impl Fn() + 'static,
     // Android has no pointer to press away with; the screen's own keyboard
     // dismisses, and the field goes with it.
     _on_pressed_away: impl Fn() + 'static,
@@ -1078,6 +1110,18 @@ pub fn reveal(path: &str) -> Result<(), String> {
         Err(format!(
             "this device has no file manager to open {path} with"
         ))
+    }
+}
+
+/// Opens the file with the default viewer/player on this device.
+pub fn open_file(path: &str) -> Result<(), String> {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        opener::open(path).map_err(|error| error.to_string())
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        open_link(&format!("file://{path}"))
     }
 }
 

@@ -77,11 +77,22 @@ pub enum CaptionsMsg {
     ExportSrtTo(PathBuf),
     OpenEditor,
     CloseEditor,
-    EditRow { id: String, text: String, start: String, end: String },
+    EditRow {
+        id: String,
+        text: String,
+        start: String,
+        end: String,
+    },
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
-pub struct CaptionRow { pub id: String, pub text: String, pub start: f64, pub end: f64 }
+pub struct CaptionRow {
+    pub id: String,
+    pub text: String,
+    pub start: f64,
+    pub end: f64,
+}
 
 /// The clip a transcription is running over, as the finished segments
 /// need it: where it starts on the timeline and how fast it plays.
@@ -154,21 +165,59 @@ impl CaptionsPane {
                 self.open_on(studio, selected, false);
             }
             CaptionsMsg::OpenOnClip(id) => self.open_on(studio, Some(id), true),
-            CaptionsMsg::Close => { self.open = false; self.editor_open = false; }
+            CaptionsMsg::Close => {
+                self.open = false;
+                self.editor_open = false;
+            }
             CaptionsMsg::OpenEditor => self.editor_open = true,
             CaptionsMsg::CloseEditor => self.editor_open = false,
-            CaptionsMsg::EditRow { id, text, start, end } => {
-                let (Some(start), Some(end)) = (start.parse::<f64>().ok(), end.parse::<f64>().ok()) else { return; };
-                let Some(clip) = studio.timeline().clips.iter().find(|clip| clip.id == id && clip.kind == ClipKind::Text) else { return; };
-                let patch = concat_project::commands::ClipPatch { text: Some(Some(TextStyle { content: text, ..clip.text.clone().unwrap_or_default() })), ..Default::default() };
+            CaptionsMsg::EditRow {
+                id,
+                text,
+                start,
+                end,
+            } => {
+                let (Some(start), Some(end)) = (start.parse::<f64>().ok(), end.parse::<f64>().ok())
+                else {
+                    return;
+                };
+                let Some(clip) = studio
+                    .timeline()
+                    .clips
+                    .iter()
+                    .find(|clip| clip.id == id && clip.kind == ClipKind::Text)
+                else {
+                    return;
+                };
+                let patch = concat_project::commands::ClipPatch {
+                    text: Some(Some(TextStyle {
+                        content: text,
+                        ..clip.text.clone().unwrap_or_default()
+                    })),
+                    ..Default::default()
+                };
                 let desired_start = start.max(0.0);
                 let desired_duration = (end - desired_start).max(1.0 / 60.0);
-                let mut commands = vec![Command::UpdateClip { clip_id: id.clone(), patch }];
+                let mut commands = vec![Command::UpdateClip {
+                    clip_id: id.clone(),
+                    patch,
+                }];
                 if (desired_start - clip.start).abs() > 0.0001 {
-                    commands.push(Command::MoveClips { moves: vec![concat_project::commands::ClipMove { clip_id: id.clone(), track_id: clip.track_id.clone(), start: desired_start }] });
+                    commands.push(Command::MoveClips {
+                        moves: vec![concat_project::commands::ClipMove {
+                            clip_id: id.clone(),
+                            track_id: clip.track_id.clone(),
+                            start: desired_start,
+                        }],
+                    });
                 }
                 if (desired_duration - clip.duration).abs() > 0.0001 {
-                    commands.push(Command::TrimClip { clip_id: id, edge: concat_project::commands::TrimEdge::End, delta: desired_duration - clip.duration, ripple: false });
+                    commands.push(Command::TrimClip {
+                        clip_id: id,
+                        edge: concat_project::commands::TrimEdge::End,
+                        delta: desired_duration - clip.duration,
+                        ripple: false,
+                    });
                 }
                 studio.apply(Command::Batch { commands });
             }
@@ -276,7 +325,21 @@ impl CaptionsPane {
                         if count == 0 {
                             studio.notify(&t("captions.nothingSaidClip"), true);
                         } else {
-                            studio.apply(Command::Batch { commands });
+                            // Feature 5 & 6: Create dedicated subtitle track automatically
+                            let sub_track = studio.apply(Command::AddTrack { bottom: false });
+                            let mut final_commands = Vec::with_capacity(commands.len());
+                            for mut cmd in commands {
+                                if let Command::AddTextClip {
+                                    ref mut track_id, ..
+                                } = cmd
+                                {
+                                    *track_id = sub_track.clone();
+                                }
+                                final_commands.push(cmd);
+                            }
+                            studio.apply(Command::Batch {
+                                commands: final_commands,
+                            });
                             self.editor_open = true;
                             studio.notify(&tf("captions.addedCaptions", &[&count]), false);
                         }
@@ -483,12 +546,16 @@ impl CaptionsPane {
     /// taken. Otherwise the chosen clip while it is still on the timeline
     /// with sound, and none - nothing to run - when it is not.
     fn subject_clip(&self, studio: &Studio, sources: &[Source]) -> Option<String> {
+        if self.clip.as_deref() == Some("all") {
+            return Some("all".to_owned());
+        }
         follow_selection(
             studio.sole_selection(),
             self.chosen_with.as_deref(),
             self.clip.as_deref(),
             |id| sources.iter().any(|source| source.id == id),
         )
+        .or_else(|| sources.first().map(|source| source.id.clone()))
     }
 
     /// A caption's look, by the sheet's rows: where it sits and its size.
@@ -531,12 +598,131 @@ impl CaptionsPane {
     /// The sheet's clip through the transcriber on a worker, reporting into
     /// the sheet as it goes.
     fn run_sound(&mut self, studio: &mut Studio) {
-        // The clip the panel shows, and no other: see `subject_clip`.
-        let Some(clip) = self
-            .subject_clip(studio, &sources(studio))
-            .and_then(|id| studio.clip(&id))
-            .cloned()
+        let sources = sources(studio);
+        let Some(selected_id) = self.subject_clip(studio, &sources) else {
+            self.message = t("captions.clipNoLongerTimeline");
+            return;
+        };
+        let Some((model, megabytes)) = installed(&studio.settings.transcribers)
+            .get(self.model)
+            .map(|model| (model.id.clone(), model.megabytes))
         else {
+            self.message = t("captions.downloadTranscriberModelFirst");
+            return;
+        };
+
+        if selected_id == "all" {
+            let flattened = concat_export::flatten::flatten_timeline(
+                studio.project(),
+                Some(&studio.timeline().id),
+            );
+            let mut sound: Vec<concat_export::ExportClip> = flattened
+                .into_iter()
+                .filter(|clip| {
+                    !clip.muted
+                        && matches!(
+                            clip.kind,
+                            concat_export::ClipKind::Video | concat_export::ClipKind::Audio
+                        )
+                        && clip.volume > 0.0
+                })
+                .collect();
+            let mut probed: std::collections::HashMap<String, bool> =
+                std::collections::HashMap::new();
+            sound.retain(|clip| {
+                clip.has_audio.unwrap_or_else(|| {
+                    *probed.entry(clip.path.clone()).or_insert_with(|| {
+                        concat_media::probe(&clip.path).is_ok_and(|info| info.audio.is_some())
+                    })
+                })
+            });
+            if sound.is_empty() {
+                self.message = t("captions.noVoiceOnTimeline");
+                return;
+            }
+            let timeline_end = sound
+                .iter()
+                .map(|clip| clip.start + clip.duration)
+                .fold(0.0f64, f64::max);
+            if timeline_end <= 0.0 {
+                self.message = t("captions.noVoiceOnTimeline");
+                return;
+            }
+
+            let temp_path = std::env::temp_dir().join(format!(
+                "concat-timeline-mix-{}-{}.m4a",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis()
+            ));
+
+            let dirs = studio.host.dirs.clone();
+            let transcriber = Arc::clone(&studio.host.transcriber);
+            let windows = (timeline_end / 30.0).ceil().max(1.0) as f32;
+            let learned = self.timings.get(&model);
+            let loaded = studio.host.transcriber.loaded_model().as_deref() == Some(model.as_str());
+            let load = if loaded {
+                0.0
+            } else {
+                learned.load.unwrap_or(0.5 + megabytes / 400.0)
+            };
+            let per_window = learned
+                .per_unit
+                .unwrap_or(0.3 + megabytes * WINDOW_SECONDS_PER_MB);
+            self.pace = Pace::new(vec![
+                (Stage::Reading, 0.5 + timeline_end as f32 / 200.0),
+                (Stage::Loading, load),
+                (Stage::Working, windows * per_window),
+            ]);
+            self.subject = Some(Subject {
+                start: 0.0,
+                speed: 1.0,
+                look: self.look(),
+                word_by_word: self.template == 1,
+                model: model.clone(),
+                windows,
+            });
+            self.running = true;
+            self.message.clear();
+            let word_timestamps = self.template == 1;
+            let epoch = crate::host::project_epoch();
+            spawn_in_project(
+                move || {
+                    let mix: Vec<concat_media::audio::AudioClip> = sound
+                        .iter()
+                        .flat_map(|clip| concat_export::audio_pieces(clip))
+                        .collect();
+                    if let Err(error) =
+                        concat_media::audio::mix_to_file(&mix, timeline_end, &temp_path)
+                    {
+                        let _ = std::fs::remove_file(&temp_path);
+                        return Err(format!("audio mix failed: {error}"));
+                    }
+                    let request = concat_speech::transcribe::TranscribeRequest {
+                        path: temp_path.to_string_lossy().into_owned(),
+                        audio_stream: None,
+                        source_start: 0.0,
+                        window: timeline_end,
+                        model_id: model,
+                        word_timestamps,
+                    };
+                    let result = transcriber.transcribe(&dirs, &request, move |stage| {
+                        on_ui_in_project(epoch, move |studio, _, _| {
+                            studio.handle(Msg::Captions(CaptionsMsg::Progress(stage)));
+                        });
+                    });
+                    let _ = std::fs::remove_file(&temp_path);
+                    result
+                },
+                |studio, _, _, result| studio.handle(Msg::Captions(CaptionsMsg::Finished(result))),
+            );
+            return;
+        }
+
+        // The clip the panel shows, and no other: see `subject_clip`.
+        let Some(clip) = studio.clip(&selected_id).cloned() else {
             self.message = t("captions.clipNoLongerTimeline");
             return;
         };
@@ -643,7 +829,7 @@ impl CaptionsPane {
         CaptionsSheetData {
             open: self.open,
             editor_open: self.editor_open,
-            rows: rows.into(),
+            rows: std::rc::Rc::new(slint::VecModel::from(rows)).into(),
             from_voice: self.from_voice,
             sources: std::rc::Rc::new(slint::VecModel::from(labels)).into(),
             source,
@@ -788,6 +974,10 @@ struct Source {
 /// The clips on the current timeline that have sound, in the order they
 /// play: an audio clip, or a video whose file has an audio stream.
 fn sources(studio: &Studio) -> Vec<Source> {
+    let mut out = vec![Source {
+        id: "all".to_owned(),
+        label: t("captions.entireTimeline"),
+    }];
     let project = studio.project();
     let mut clips: Vec<_> = studio
         .timeline()
@@ -802,13 +992,11 @@ fn sources(studio: &Studio) -> Vec<Source> {
         })
         .collect();
     clips.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    clips
-        .into_iter()
-        .map(|(start, id, name)| Source {
-            id,
-            label: source_label(&name, start),
-        })
-        .collect()
+    out.extend(clips.into_iter().map(|(start, id, name)| Source {
+        id,
+        label: source_label(&name, start),
+    }));
+    out
 }
 
 /// A clip as the list names it: its file and where it starts on the
@@ -859,6 +1047,7 @@ fn caption_clip(
         style: Some(style),
         duration: Some(duration),
         offset_y: Some(offset_y),
+        animations: None,
     }
 }
 
@@ -889,12 +1078,7 @@ fn word_caption_clips(
         .collect()
 }
 
-fn word_caption_clip(
-    text: String,
-    start: f64,
-    duration: f64,
-    base: Option<&TextStyle>,
-) -> Command {
+fn word_caption_clip(text: String, start: f64, duration: f64, base: Option<&TextStyle>) -> Command {
     let style = match base {
         Some(base) => TextStyle {
             content: text,
@@ -924,6 +1108,16 @@ fn word_caption_clip(
             ..TextStyle::default()
         },
     };
+    let anim_duration = (duration * 0.45).clamp(0.06, 0.18);
+    let animations = concat_project::model::ClipAnimations {
+        entrance: Some(concat_project::model::ClipAnimation {
+            id: "pop".to_string(),
+            duration: anim_duration,
+            intensity: 1.15,
+        }),
+        exit: None,
+        combo: None,
+    };
     Command::AddTextClip {
         track_id: None,
         above: true,
@@ -931,6 +1125,7 @@ fn word_caption_clip(
         style: Some(style),
         duration: Some(duration),
         offset_y: Some(-0.08),
+        animations: Some(animations),
     }
 }
 
@@ -1135,5 +1330,22 @@ mod tests {
         assert!(lines[2].1 > lines[0].1);
         assert!(script_captions("  \n ").is_empty());
         assert_eq!(script_captions("你好。再见！").len(), 2);
+    }
+
+    #[test]
+    fn word_captions_have_pop_animation() {
+        let commands = super::word_caption_clips("Word by word test", 0.0, 1.2, None);
+        assert_eq!(commands.len(), 4);
+        for command in commands {
+            match command {
+                concat_project::Command::AddTextClip { animations, .. } => {
+                    let anim = animations.expect("word caption has animations");
+                    let entrance = anim.entrance.expect("entrance animation present");
+                    assert_eq!(entrance.id, "pop");
+                    assert!(entrance.duration > 0.0);
+                }
+                _ => panic!("expected AddTextClip"),
+            }
+        }
     }
 }

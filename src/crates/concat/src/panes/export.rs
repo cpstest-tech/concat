@@ -38,6 +38,10 @@ pub enum ExportMsg {
     TenBitChanged(bool),
     /// For an HDR timeline: written HDR (true), or tone-mapped to SDR.
     HdrChanged(bool),
+    /// Match the best video in the project for bitrate/resolution/fps.
+    MatchBestMedia,
+    /// Open the finished file with system viewer/player.
+    OpenFinishedFile,
     /// The target bitrate field, in Mbps: the bitrate becomes a custom one.
     BitrateChanged(f32),
     /// Back to the form after a finished or failed render.
@@ -58,6 +62,8 @@ pub enum ExportMsg {
         fraction: f32,
         /// What it is doing, in the person's language.
         stage: String,
+        /// Preview thumbnail during rendering.
+        thumbnail: Option<slint::Image>,
     },
     /// The render's worker is done: the file written, or why not.
     Finished(Result<String, String>),
@@ -89,6 +95,8 @@ pub struct ExportPane {
     pub message: String,
     /// Where the finished file is, for Reveal.
     pub written: String,
+    /// Render preview or finished thumbnail.
+    pub thumbnail: Option<slint::Image>,
     /// When the render started, for a real ETA.
     started_at: Option<std::time::Instant>,
 }
@@ -118,6 +126,7 @@ impl Default for ExportPane {
             stage: String::new(),
             message: String::new(),
             written: String::new(),
+            thumbnail: None,
             started_at: None,
         }
     }
@@ -134,12 +143,23 @@ impl ExportPane {
                 self.open = true;
                 self.phase = ExportPhase::Idle;
                 self.message.clear();
+                self.thumbnail = None;
                 // The timeline's own size: the one rung that can be picked;
                 // and its own rate, first on the rate list.
                 self.resolution = Self::own_rung(studio);
                 self.rate = 0;
             }
             ExportMsg::Close => self.open = false,
+            ExportMsg::MatchBestMedia => {
+                self.match_best_video(studio);
+            }
+            ExportMsg::OpenFinishedFile => {
+                if !self.written.is_empty() {
+                    if let Err(error) = platform::open_file(&self.written) {
+                        studio.notify(&i18n::tf("export.couldNotShowFile", &[&error]), true);
+                    }
+                }
+            }
             ExportMsg::NameEdited(name) => self.name = name,
             ExportMsg::RateChanged(index) => {
                 self.rate = (index.max(0) as usize).min(Self::rates(studio).len() - 1);
@@ -193,10 +213,17 @@ impl ExportPane {
                 self.phase = ExportPhase::Idle;
                 self.progress = 0.0;
             }
-            ExportMsg::Progress { fraction, stage } => {
+            ExportMsg::Progress {
+                fraction,
+                stage,
+                thumbnail,
+            } => {
                 if self.phase == ExportPhase::Running {
                     self.progress = fraction.clamp(0.0, 1.0);
                     self.stage = stage;
+                    if let Some(image) = thumbnail {
+                        self.thumbnail = Some(image);
+                    }
                 }
             }
             ExportMsg::Finished(Ok(written)) => {
@@ -502,8 +529,14 @@ impl ExportPane {
                         "muxing" => t("export.finalisingFile"),
                         other => other.to_owned(),
                     };
+                    let thumbnail_frame = progress.thumbnail;
                     on_ui(move |studio, _, _| {
-                        studio.handle(Msg::Export(ExportMsg::Progress { fraction, stage }));
+                        let thumbnail = thumbnail_frame.as_ref().map(crate::host::image_of);
+                        studio.handle(Msg::Export(ExportMsg::Progress {
+                            fraction,
+                            stage,
+                            thumbnail,
+                        }));
                     });
                 })
             },
@@ -634,7 +667,72 @@ impl ExportPane {
             message: self.message.as_str().into(),
             done_size: bytes(self.size_bytes(studio)).into(),
             empty: clips == 0,
+            thumbnail: self.thumbnail.clone().unwrap_or_default(),
+            has_thumbnail: self.thumbnail.is_some(),
         }
+    }
+
+    /// Sets bitrate, resolution, and fps matching the best video in the project.
+    pub fn match_best_video(&mut self, studio: &Studio) {
+        let project = studio.project();
+        let video_items: Vec<_> = project
+            .media
+            .iter()
+            .filter(|m| {
+                m.kind == concat_project::model::MediaKind::Video
+                    && m.width.is_some()
+                    && m.height.is_some()
+            })
+            .collect();
+        if video_items.is_empty() {
+            return;
+        }
+
+        let best = video_items.iter().max_by_key(|item| {
+            let pixels = u64::from(item.width.unwrap_or(0)) * u64::from(item.height.unwrap_or(0));
+            let file_size = std::fs::metadata(&item.path).map(|m| m.len()).unwrap_or(0);
+            (pixels, file_size)
+        });
+
+        let Some(best) = best else { return };
+
+        let best_short = best.width.unwrap_or(1080).min(best.height.unwrap_or(1920));
+        let ladder = Self::ladder(studio);
+        if let Some((idx, _)) = ladder
+            .iter()
+            .copied()
+            .enumerate()
+            .min_by_key(|item| item.1.abs_diff(best_short))
+        {
+            self.resolution = idx;
+        }
+
+        if let Some(fps) = best.frame_rate {
+            let rates = Self::rates(studio);
+            if let Some((idx, _)) = rates.iter().copied().enumerate().min_by(|a, b| {
+                let diff_a = (a.1.0 as f64 / a.1.1.max(1) as f64 - fps).abs();
+                let diff_b = (b.1.0 as f64 / b.1.1.max(1) as f64 - fps).abs();
+                diff_a.total_cmp(&diff_b)
+            }) {
+                self.rate = idx;
+            }
+        }
+
+        let file_size = std::fs::metadata(&best.path).map(|m| m.len()).unwrap_or(0);
+        let duration = best.duration.unwrap_or(1.0).max(0.1);
+        let estimated_kbps = if file_size > 0 && duration > 0.0 {
+            ((file_size as f64 * 8.0 / duration / 1000.0).round() as u32).clamp(1000, 300_000)
+        } else {
+            match best_short {
+                0..=720 => 8_000,
+                721..=1080 => 16_000,
+                1081..=1440 => 28_000,
+                _ => 60_000,
+            }
+        };
+
+        self.bitrate = estimated_kbps;
+        self.custom = true;
     }
 }
 

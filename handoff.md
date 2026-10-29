@@ -49,10 +49,17 @@ Queste directory sono fuori dal checkout: l'installazione richiede permessi appr
 
 ## Verifiche e stato del checkout
 
-- `cargo fmt --all -- --check` e `git diff --check` sono passati dopo le modifiche più recenti.
-- Il build `quick` dell'app è passato.
-- `cargo test -p concat-project` aveva passato 162 test dopo le modifiche precedenti al modello e alle operazioni audio. Non è stato rieseguito dopo le ultime modifiche alla UI e alla preview.
-- Il checkout contiene modifiche locali non committate provenienti dal lavoro svolto in questa sessione. Prima di scartare o sovrascrivere file, controllare `git status --short` e `git diff`.
+- `cargo fmt --all -- --check` e `git diff --check` passano con successo (0 errori).
+- Il build `quick` dell'app è passato e il binario è stato installato in `~/.local/libexec/concat/concat`.
+- `concat --smoke` è stato eseguito con successo (NVIDIA RTX 2060 Discrete GPU Vulkan attiva, Whisper su CPU AMD Ryzen 7 7700).
+- `cargo test -p concat-core` (64 test) e `cargo test -p concat-project` (162 test) passano con successo.
+- `cargo test -p concat-effects` (72 test) passa con successo.
+- `cargo test -p concat --lib` (162 test passati, inclusi i test su animazioni captions, i18n e cards).
+- Risolto il bug delle animazioni che tornavano a "NONE" al click: `clip_commands` in `studio.rs` non includeva il confronto `after.animations != before.animations` per emettere `Command::UpdateClip`.
+- Aggiunto il selettore di animazioni (In / Out / Combo, preset testo come word-reveal, typewriter, wave-loop, pop, fade, slide, zoom, e cursore durata) in `TextPanel` (`text-panel.slint`).
+- Aggiunte animazioni automatiche ai sottotitoli parola per parola (preset `pop` con rimbalzo dinamico su scala e durata calcolata per ogni singola parola) e aggiunto campo `animations` a `Command::AddTextClip`.
+- Risolti errori di compilazione Slint (`captions-editor-closed`, `captions-edit-row` non esposti in `app.slint` e conversione `ModelRc` per `rows` in `panes/captions.rs`).
+- Risolto errore "Preview failed: no GPU or software renderer is available to draw with - install Mesa's Vulkan drivers (lavapipe)": `--smoke` armava il tripwire di startup che a causa di `leave(0)` non veniva disarmato, inducendo `safe_start` a bloccare l'uso della GPU NVIDIA GeForce RTX 2060 forzando `softwareGpu: true`. Disattivato l'armamento del tripwire durante `--smoke`, aggiunto fallback hardware trasparente se non esiste rasterizzatore software e ripristinato `softwareGpu: false` in `~/.config/app.concat.editor/settings.json`.
 
 ## Dettagli del progetto che avrebbero evitato tentativi
 
@@ -70,3 +77,41 @@ Queste directory sono fuori dal checkout: l'installazione richiede permessi appr
 - Blur non è implementato: il compositor attuale non espone un blur per singolo livello. Gli indicatori di durata sulla timeline sono anch'essi ancora da aggiungere.
 - **Prossimo lavoro: animazioni per il testo.** Il modello `Clip` può già contenere gli slot, ma al momento l'inspector Animazioni è mostrato solo a foto e video. I testi vengono esclusi dal flattener normale e rasterizzati separatamente da `concat-host/src/titles.rs`; il loro `ExportClip` non copia ancora `clip.animations` in `preset_animations`. Per attivare le animazioni testo, aggiungere l'accesso UI per `ClipKind::Text`, pubblicare gli stessi campi in `SelectedClipData` e trasferire gli slot nel `ExportClip` del rasterizzatore titoli. Il motore core condiviso può quindi valutarli senza creare una seconda implementazione della preview/export.
 - La modifica delle animazioni foto/video è stata scritta senza build né test: va ancora compilata e provata sul checkout. Non considerare verificati Slint, rendering o round-trip del progetto fino a quel controllo.
+
+## Implementazioni recenti (Bug UX, Export, Feature)
+
+### 1. Drag & drop affidabile e diretto sulla timeline
+- **Media -> Timeline**: il drag hover non resettava lo stato in caso di uscita prematura o rilascio fuori bersaglio; aggiunta callback `drag-hover-ended` che azzera `state.drop` nello `Studio`, unificando la verifica sincrona dei payload ammessi (`is-timeline-payload`).
+- **Spostamento clip in timeline**: avvolto il corpo del `Clip` in `lanes.slint` con un `DragArea` (payload `"clip:{id}"`). Lo `Studio` riconosce il payload e genera un `Command::MoveClips`.
+
+### 2. Import asincrono non bloccante
+- `rfd::FileDialog` in `host::after_dialog` bloccava il thread UI durante l'apertura del selettore nativo. Spostato `ask()` su `std::thread::spawn`.
+- Il probing dei metadati media ora emette `MediaMsg::ImportProgress(f32)` e visualizza una barra di caricamento progressiva accentata dentro il pulsante Importa (`media-pane.slint`), evitando il freeze del compositor.
+
+### 3. Timeline magnetica per-traccia
+- Aggiunto `magnetic: bool` a `Track` in `concat-project/src/model.rs` (default `false`, default `true` solo per la traccia primaria "T1").
+- Aggiunto `TrackFlag::Magnetic` e pulsante calamita (`Glyph.magnet`) negli header traccia (`track-header.slint`).
+- `close_gaps` e i gesti di ripple trimming/delete ora controllano `track.magnetic` (tramite `studio.is_track_magnetic` / `studio.is_clip_track_magnetic`), salvando la preferenza nel file di progetto.
+
+### 4. Creazione autonoma di tracce (Drop collision avoidance)
+- In `studio.rs::place`, se la traccia di destinazione ha già clip nell'intervallo temporale `[start, start + duration)` (`!timeline.is_free(...)`), viene invocato automaticamente `Command::AddTrack { bottom: false }` posizionando il clip sulla nuova traccia.
+
+### 5. Sottotitoli su tutto il montato (Intera Timeline)
+- Aggiunta sorgente `"all"` ("Intera timeline") in `panes/captions.rs`.
+- Se selezionata, appiattisce l'intera timeline (`concat_export::flatten_timeline`), filtra le tracce audio/video con volume $>0$, genera un mix fedele a tagli e livelli via `concat_media::audio::mix_to_file` e lo invia a Whisper con offset 0.0.
+- Alla ricezione dei segmenti, crea in automatico una traccia sottotitoli dedicata in cima alla timeline (`Command::AddTrack`) e vi inserisce i blocchi di testo.
+
+### 6. Rimozione sfondo / Cutout migliorata
+- **Smoothing temporale tra frame**: `Mask::blend(a, b, t)` calcola l'interpolazione lineare a virgola fissa tra i keyframe a 10 fps in `store.rs::mask_at` e `store.rs::resolved`, eliminando lo scatto/flicker a 10 fps su video a 30/60 fps.
+- **Raffinamento bordi e capelli**: `Mask::refined(&self)` sopprime il rumore di fondo ($<12$), assicura opacità piena sull'interno del soggetto ($>242$) e applica una curva S smoothstep Hermite con anti-aliasing sui contorni di transizione, rimuovendo la scalettatura su capelli e sagome.
+
+### 7. Migliorie Export
+- **Bitrate miglior video**: aggiunta opzione "Corrisponde al miglior video del progetto" in `dialogs/export.slint` (`ExportMsg::MatchBestMedia`), che imposta bitrate, risoluzione e framerate in base alla sorgente con qualità più elevata.
+- **Anteprima live durante il render**: `concat_export::Reporter` cattura i frame campionati a 640px con cadenza fluida (~4-6 frame/s) prima dell'emissione del progresso, mostrati in grande player dedicato nel dialogo di esportazione a tutto schermo.
+- **Schermata fine export e apertura nel programma**: creata vista dedicata a completamento render: titolo "Il video è pronto", grande anteprima visiva, pulsante principale "Apri nell'editor" (carica il video esportato direttamente nel monitor player di ConCat e avvia la riproduzione), pulsante secondario "Apri con player" (player di sistema esterno) e "Mostra nella cartella".
+
+### 8. Perfezionamenti Drag & Drop e Layout Export (Ottobre 2026)
+- **Risoluzione bug Slint DnD per spostamento clip**: Slint scarta silenziosamente il drag se `DropArea.can-drop` restituisce un'azione non inclusa nelle azioni consentite da `DragArea` (es. restituire `copy` quando `allow-copy` era `false` su `Clip`). Risolto abilitando sia `allow-copy: true` che `allow-move: true` su `Clip` in `lanes.slint` e facendo restituire `event.proposed-action` sia da `can-drop` che da `dropped`.
+- **Creazione automatica nuova traccia trascinando su righello/numeri o poco sopra**: `DropArea` in `lanes.slint` e l'area di drop su `TimelineTray` intercettano i drag posizionati sul righello o poco sopra (`y < ruler-height + 12px` o sulla barra strumenti timeline). Viene attivato `is_new_track = true`. L'interfaccia mostra un'anteprima visiva con corsia dedicata evidenziata `+ Nuova traccia` e ghost del clip con badge "+ Nuova traccia: {nome}". Riportando il cursore verso il basso l'anteprima si toglie all'istante tornando alla traccia ordinaria. Rilasciando in alto viene creata una traccia in cima e piazzato/spostato il clip; rilasciando su una traccia esistente viene posizionato lì senza creare tracce indesiderate (rimosso il vecchio automatismo che creava tracce sulle collisioni ordinarie).
+- **Drag & drop dal file manager direttamente sulla timeline**: Collegato il monitoraggio del cursore e degli eventi OS (`HoveredFile`, `CursorMoved`, `DroppedFile` in `DropHandler` e listener Wayland). Durante l'hover del file dal gestore file viene calcolata la posizione esatta sulla timeline tramite `Studio::timeline_drop_target`, mostrando il ghost preview del clip (e l'anteprima nuova traccia se vicino al righello). Al rilascio, il file viene aggiunto ai media e inserito istantaneamente come clip sulla timeline nella posizione e traccia esatte (o su nuova traccia in cima se rilasciato sul righello).
+- **Layout di esportazione e apertura video nel programma**: `Measure` espanso a `max: 1800px` con layout responsive. Durante il rendering viene mostrato un player live widescreen ad alta risoluzione (640px) affiancato al pannello di avanzamento. A fine export viene presentata la schermata "Il video è pronto" con pulsante principale "Apri" (carica e avvia la riproduzione del file esportato direttamente nell'editor), "Apri con lettore esterno" e "Mostra nella cartella".

@@ -119,6 +119,75 @@ impl Mask {
         (top * (1.0 - fy) + bottom * fy) / 255.0
     }
 
+    /// Linearly blends two masks of the same dimensions by weight `t` in `0.0..=1.0`.
+    /// `0.0` yields `a`, `1.0` yields `b`.
+    pub fn blend(a: &Mask, b: &Mask, t: f32) -> Mask {
+        if a.width != b.width || a.height != b.height || t <= 0.001 {
+            return a.clone();
+        }
+        if t >= 0.999 {
+            return b.clone();
+        }
+        let factor = (t.clamp(0.0, 1.0) * 256.0).round() as u32;
+        let inv = 256 - factor;
+        let data: Vec<u8> = a
+            .data
+            .iter()
+            .zip(&b.data)
+            .map(|(&va, &vb)| ((u32::from(va) * inv + u32::from(vb) * factor + 128) >> 8) as u8)
+            .collect();
+        Mask {
+            width: a.width,
+            height: a.height,
+            data,
+        }
+    }
+
+    /// Refines the mask edges: preserves flat regions and solid foreground/background,
+    /// while smoothing edge transitions and boundary staircases (hair, silhouettes)
+    /// using anti-aliased neighbor weighting and an S-curve.
+    pub fn refined(&self) -> Mask {
+        let width = self.width;
+        let height = self.height;
+        let mut out = Vec::with_capacity(self.data.len());
+        for y in 0..height as i64 {
+            for x in 0..width as i64 {
+                let v = self.at(x, y);
+                // Check if this pixel is on an edge boundary
+                let (mut min_n, mut max_n) = (v, v);
+                let mut sum = u32::from(v) * 2;
+                let mut count = 2u32;
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let n = self.at(x + dx, y + dy);
+                    min_n = min_n.min(n);
+                    max_n = max_n.max(n);
+                    sum += u32::from(n);
+                    count += 1;
+                }
+                // If flat region (no contrast with neighbors), preserve value
+                if max_n == min_n {
+                    out.push(v);
+                } else if v <= 10 && max_n <= 15 {
+                    // Suppress low background noise
+                    out.push(0);
+                } else if v >= 245 && min_n >= 240 {
+                    // Solid foreground interior
+                    out.push(255);
+                } else {
+                    // Edge transition: compute anti-aliased average and apply smoothstep
+                    let avg = sum as f32 / (count as f32 * 255.0);
+                    let smooth = avg * avg * (3.0 - 2.0 * avg);
+                    out.push((smooth * 255.0 + 0.5) as u8);
+                }
+            }
+        }
+        Mask {
+            width,
+            height,
+            data: out,
+        }
+    }
+
     /// The mask softened: three box blurs of `radius` pixels, which is a
     /// gaussian to the eye at a fraction of the cost. Zero is the mask
     /// itself.

@@ -42,10 +42,17 @@ export component TextPanel inherits VerticalLayout {
     callback set-text(field: ClipTextField, value: string);
     callback set-colour(field: ClipTextField, value: color);
     callback commit();
+    callback animation-set(slot: int, id: string, duration: float);
     /// The square beside the font picker: bring a font file of your own in.
     callback import-font();
     /// Keep this title's look for new titles and captions.
     callback set-default();
+
+    property <int> animation-tab: 0;
+    property <string> active-animation: root.animation-tab == 0 ? root.selected.animation-in-id
+        : root.animation-tab == 1 ? root.selected.animation-out-id : root.selected.animation-combo-id;
+    property <float> active-animation-duration: root.animation-tab == 0 ? root.selected.animation-in-duration
+        : root.animation-tab == 1 ? root.selected.animation-out-duration : root.selected.animation-combo-duration;
 
     /// Several titles selected together: every knob writes to all of them
     /// and the words, each title's own, are not offered.
@@ -264,6 +271,71 @@ export component TextPanel inherits VerticalLayout {
                         return reject;
                     }
                 }
+            }
+        }
+    }
+
+    Section {
+        animations-header := SectionHeader {
+            title: I18n.t("clipInspector.animations");
+            collapsible: true;
+            summary: root.active-animation == "" ? I18n.t("common.none") : root.active-animation;
+        }
+        if animations-header.open: SectionBody {
+            HorizontalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                spacing: 4px;
+                Button { label: I18n.t("clipInspector.animationIn"); primary: root.animation-tab == 0; clicked => { root.animation-tab = 0; } }
+                Button { label: I18n.t("clipInspector.animationOut"); primary: root.animation-tab == 1; clicked => { root.animation-tab = 1; } }
+                Button { label: I18n.t("clipInspector.animationCombo"); primary: root.animation-tab == 2; clicked => { root.animation-tab = 2; } }
+            }
+            VerticalLayout {
+                padding-left: Theme.pad;
+                padding-right: Theme.pad;
+                spacing: 4px;
+                Button { label: I18n.t("common.none"); block: true; primary: root.active-animation == ""; clicked => { root.animation-set(root.animation-tab, "", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationWordReveal"); primary: root.active-animation == "word-reveal"; clicked => { root.animation-set(0, "word-reveal", 0.6); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationCharacterReveal"); primary: root.active-animation == "character-reveal"; clicked => { root.animation-set(0, "character-reveal", 0.6); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationTypewriter"); primary: root.active-animation == "typewriter"; clicked => { root.animation-set(0, "typewriter", 0.8); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationFade"); primary: root.active-animation == "fade-in"; clicked => { root.animation-set(0, "fade-in", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationPop"); primary: root.active-animation == "pop"; clicked => { root.animation-set(0, "pop", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationZoom"); primary: root.active-animation == "zoom-in"; clicked => { root.animation-set(0, "zoom-in", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideLeft"); primary: root.active-animation == "slide-left"; clicked => { root.animation-set(0, "slide-left", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideRight"); primary: root.active-animation == "slide-right"; clicked => { root.animation-set(0, "slide-right", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideUp"); primary: root.active-animation == "slide-up"; clicked => { root.animation-set(0, "slide-up", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideDown"); primary: root.active-animation == "slide-down"; clicked => { root.animation-set(0, "slide-down", 0.5); } }
+                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationRotate"); primary: root.active-animation == "rotate-in"; clicked => { root.animation-set(0, "rotate-in", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationWordExit"); primary: root.active-animation == "word-exit"; clicked => { root.animation-set(1, "word-exit", 0.6); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationCharacterExit"); primary: root.active-animation == "character-exit"; clicked => { root.animation-set(1, "character-exit", 0.6); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationTypewriterReverse"); primary: root.active-animation == "typewriter-reverse"; clicked => { root.animation-set(1, "typewriter-reverse", 0.8); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationFade"); primary: root.active-animation == "fade-out"; clicked => { root.animation-set(1, "fade-out", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideLeft"); primary: root.active-animation == "slide-left"; clicked => { root.animation-set(1, "slide-left", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideRight"); primary: root.active-animation == "slide-right"; clicked => { root.animation-set(1, "slide-right", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideUp"); primary: root.active-animation == "slide-up"; clicked => { root.animation-set(1, "slide-up", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideDown"); primary: root.active-animation == "slide-down"; clicked => { root.animation-set(1, "slide-down", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationZoomOut"); primary: root.active-animation == "zoom-out"; clicked => { root.animation-set(1, "zoom-out", 0.5); } }
+                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationRotate"); primary: root.active-animation == "rotate-out"; clicked => { root.animation-set(1, "rotate-out", 0.5); } }
+                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationWaveLoop"); primary: root.active-animation == "wave-loop"; clicked => { root.animation-set(2, "wave-loop", 2); } }
+                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationPulse"); primary: root.active-animation == "pulse"; clicked => { root.animation-set(2, "pulse", 2); } }
+                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationOscillate"); primary: root.active-animation == "oscillate"; clicked => { root.animation-set(2, "oscillate", 2); } }
+                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationFloat"); primary: root.active-animation == "float"; clicked => { root.animation-set(2, "float", 2); } }
+                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationShake"); primary: root.active-animation == "shake"; clicked => { root.animation-set(2, "shake", 2); } }
+                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationKenBurns"); primary: root.active-animation == "ken-burns"; clicked => { root.animation-set(2, "ken-burns", 2); } }
+            }
+            if root.active-animation != "": Param {
+                label: I18n.t("clipInspector.animationDuration");
+                value: root.active-animation-duration;
+                minimum: 0.05;
+                maximum: root.animation-tab == 0
+                    ? Math.max(0.05, root.selected.duration - (root.selected.animation-out-id == "" ? 0 : root.selected.animation-out-duration))
+                    : root.animation-tab == 1
+                        ? Math.max(0.05, root.selected.duration - (root.selected.animation-in-id == "" ? 0 : root.selected.animation-in-duration))
+                        : Math.max(0.05, root.selected.duration);
+                step: 0.05;
+                default-value: 0.5;
+                fmt: ParamFormat.seconds2;
+                changed(v) => { root.animation-set(root.animation-tab, root.active-animation, v); }
             }
         }
     }

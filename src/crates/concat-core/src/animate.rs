@@ -260,16 +260,22 @@ pub struct Animation {
 /// resolves it to this small renderer vocabulary.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct PresetAnimation {
+    /// The preset identifier.
     pub id: PresetId,
+    /// Duration in seconds.
     pub duration: f64,
+    /// Intensity factor.
     pub intensity: f64,
 }
 
 /// The three mutually constrained animation slots on a clip.
 #[derive(Clone, Copy, PartialEq, Debug, Default)]
 pub struct PresetSet {
+    /// Entrance animation.
     pub entrance: Option<PresetAnimation>,
+    /// Exit animation.
     pub exit: Option<PresetAnimation>,
+    /// Combo animation.
     pub combo: Option<PresetAnimation>,
 }
 
@@ -277,21 +283,58 @@ pub struct PresetSet {
 /// per-layer blur operation.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PresetId {
-    Fade, SlideLeft, SlideRight, SlideUp, SlideDown, Zoom, Pop, Rotate,
-    ZoomOut, RotateOut, KenBurns, Pulse, Oscillate, Float, Shake,
+    /// Fade animation.
+    Fade,
+    /// Slide left animation.
+    SlideLeft,
+    /// Slide right animation.
+    SlideRight,
+    /// Slide up animation.
+    SlideUp,
+    /// Slide down animation.
+    SlideDown,
+    /// Zoom in animation.
+    Zoom,
+    /// Pop scale animation.
+    Pop,
+    /// Rotate in animation.
+    Rotate,
+    /// Zoom out animation.
+    ZoomOut,
+    /// Rotate out animation.
+    RotateOut,
+    /// Ken Burns pan/zoom animation.
+    KenBurns,
+    /// Pulse scale animation.
+    Pulse,
+    /// Oscillate animation.
+    Oscillate,
+    /// Float floating motion.
+    Float,
+    /// Shake motion.
+    Shake,
 }
 
 impl PresetId {
+    /// Parses a string preset name into a `PresetId`.
     pub fn parse(id: &str) -> Option<Self> {
         Some(match id {
             "fade-in" | "fade-out" => Self::Fade,
-            "slide-left" => Self::SlideLeft, "slide-right" => Self::SlideRight,
-            "slide-up" => Self::SlideUp, "slide-down" => Self::SlideDown,
-            "zoom-in" => Self::Zoom, "pop" => Self::Pop, "rotate-in" => Self::Rotate,
-            "zoom-out" => Self::ZoomOut, "rotate-out" => Self::RotateOut,
-            "ken-burns" => Self::KenBurns, "pulse" => Self::Pulse,
-            "oscillate" => Self::Oscillate, "float" => Self::Float,
-            "shake" => Self::Shake, _ => return None,
+            "slide-left" => Self::SlideLeft,
+            "slide-right" => Self::SlideRight,
+            "slide-up" => Self::SlideUp,
+            "slide-down" => Self::SlideDown,
+            "zoom-in" => Self::Zoom,
+            "pop" => Self::Pop,
+            "rotate-in" => Self::Rotate,
+            "zoom-out" => Self::ZoomOut,
+            "rotate-out" => Self::RotateOut,
+            "ken-burns" => Self::KenBurns,
+            "pulse" => Self::Pulse,
+            "oscillate" => Self::Oscillate,
+            "float" => Self::Float,
+            "shake" => Self::Shake,
+            _ => return None,
         })
     }
 }
@@ -299,22 +342,39 @@ impl PresetId {
 /// Offset and multiplier returned by the pure preset evaluator.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct MotionDelta {
+    /// Horizontal translation delta in frame fractions.
     pub x: f64,
+    /// Vertical translation delta in frame fractions.
     pub y: f64,
+    /// Scale factor multiplier.
     pub scale: f64,
+    /// Rotation delta in degrees.
     pub rotation: f64,
+    /// Opacity factor multiplier.
     pub opacity: f64,
 }
 
 impl Default for MotionDelta {
     fn default() -> Self {
-        MotionDelta { x: 0.0, y: 0.0, scale: 1.0, rotation: 0.0, opacity: 1.0 }
+        MotionDelta {
+            x: 0.0,
+            y: 0.0,
+            scale: 1.0,
+            rotation: 0.0,
+            opacity: 1.0,
+        }
     }
 }
 
 /// Evaluate a preset at clip-local time. Coordinates are frame fractions,
 /// scale and opacity are multipliers, and rotation is degrees.
-pub fn evaluate_preset(preset: PresetAnimation, local: f64, clip_duration: f64, is_out: bool, is_combo: bool) -> MotionDelta {
+pub fn evaluate_preset(
+    preset: PresetAnimation,
+    local: f64,
+    clip_duration: f64,
+    is_out: bool,
+    is_combo: bool,
+) -> MotionDelta {
     let d = preset.duration.clamp(0.001, clip_duration.max(0.001));
     let p = preset.id;
     let intensity = preset.intensity.max(0.0);
@@ -322,30 +382,96 @@ pub fn evaluate_preset(preset: PresetAnimation, local: f64, clip_duration: f64, 
         let phase = local.max(0.0) / d.max(0.001) * std::f64::consts::TAU;
         let wave = phase.sin();
         return match p {
-            PresetId::KenBurns => MotionDelta { scale: 1.0 + 0.12 * intensity * (local / clip_duration.max(0.001)), ..MotionDelta::default() },
-            PresetId::Pulse => MotionDelta { scale: 1.0 + 0.04 * intensity * wave, ..MotionDelta::default() },
-            PresetId::Oscillate => MotionDelta { rotation: 4.0 * intensity * wave, ..MotionDelta::default() },
-            PresetId::Float => MotionDelta { y: 0.025 * intensity * wave, ..MotionDelta::default() },
-            PresetId::Shake => MotionDelta { x: 0.008 * intensity * wave, y: 0.006 * intensity * (phase * 1.37).sin(), rotation: 0.8 * intensity * (phase * 0.83).sin(), ..MotionDelta::default() },
+            PresetId::KenBurns => MotionDelta {
+                scale: 1.0 + 0.12 * intensity * (local / clip_duration.max(0.001)),
+                ..MotionDelta::default()
+            },
+            PresetId::Pulse => MotionDelta {
+                scale: 1.0 + 0.04 * intensity * wave,
+                ..MotionDelta::default()
+            },
+            PresetId::Oscillate => MotionDelta {
+                rotation: 4.0 * intensity * wave,
+                ..MotionDelta::default()
+            },
+            PresetId::Float => MotionDelta {
+                y: 0.025 * intensity * wave,
+                ..MotionDelta::default()
+            },
+            PresetId::Shake => MotionDelta {
+                x: 0.008 * intensity * wave,
+                y: 0.006 * intensity * (phase * 1.37).sin(),
+                rotation: 0.8 * intensity * (phase * 0.83).sin(),
+                ..MotionDelta::default()
+            },
             _ => MotionDelta::default(),
         };
     }
-    let progress = if is_out { (local - (clip_duration - d)) / d } else { local / d }.clamp(0.0, 1.0);
+    let progress = if is_out {
+        (local - (clip_duration - d)) / d
+    } else {
+        local / d
+    }
+    .clamp(0.0, 1.0);
     // Smoothstep is the shared ease-in-out for the initial library.
     let t = progress * progress * (3.0 - 2.0 * progress);
     match p {
-        PresetId::Fade => MotionDelta { opacity: if is_out { 1.0 - t } else { t }, ..MotionDelta::default() },
+        PresetId::Fade => MotionDelta {
+            opacity: if is_out { 1.0 - t } else { t },
+            ..MotionDelta::default()
+        },
         PresetId::SlideLeft | PresetId::SlideRight | PresetId::SlideUp | PresetId::SlideDown => {
-            let sign = if matches!(p, PresetId::SlideLeft | PresetId::SlideUp) { -1.0 } else { 1.0 };
+            let sign = if matches!(p, PresetId::SlideLeft | PresetId::SlideUp) {
+                -1.0
+            } else {
+                1.0
+            };
             let amount = 0.35 * intensity * if is_out { t } else { 1.0 - t } * sign;
-            MotionDelta { x: if matches!(p, PresetId::SlideLeft | PresetId::SlideRight) { amount } else { 0.0 }, y: if matches!(p, PresetId::SlideUp | PresetId::SlideDown) { amount } else { 0.0 }, ..MotionDelta::default() }
+            MotionDelta {
+                x: if matches!(p, PresetId::SlideLeft | PresetId::SlideRight) {
+                    amount
+                } else {
+                    0.0
+                },
+                y: if matches!(p, PresetId::SlideUp | PresetId::SlideDown) {
+                    amount
+                } else {
+                    0.0
+                },
+                ..MotionDelta::default()
+            }
         }
         PresetId::Zoom | PresetId::Pop => {
-            let bounce = if p == PresetId::Pop { (std::f64::consts::PI * progress).sin() * (1.0 - progress) * 0.16 * intensity } else { 0.0 };
-            MotionDelta { scale: if is_out { 1.0 - 0.35 * intensity * t } else { 1.0 - 0.35 * intensity * (1.0 - t) + bounce }, ..MotionDelta::default() }
+            let bounce = if p == PresetId::Pop {
+                (std::f64::consts::PI * progress).sin() * (1.0 - progress) * 0.16 * intensity
+            } else {
+                0.0
+            };
+            MotionDelta {
+                scale: if is_out {
+                    1.0 - 0.35 * intensity * t
+                } else {
+                    1.0 - 0.35 * intensity * (1.0 - t) + bounce
+                },
+                ..MotionDelta::default()
+            }
         }
-        PresetId::ZoomOut => MotionDelta { scale: if is_out { 1.0 - 0.35 * intensity * t } else { 1.0 - 0.35 * intensity * (1.0 - t) }, ..MotionDelta::default() },
-        PresetId::Rotate | PresetId::RotateOut => MotionDelta { rotation: if is_out { 12.0 * intensity * t } else { -12.0 * intensity * (1.0 - t) }, ..MotionDelta::default() },
+        PresetId::ZoomOut => MotionDelta {
+            scale: if is_out {
+                1.0 - 0.35 * intensity * t
+            } else {
+                1.0 - 0.35 * intensity * (1.0 - t)
+            },
+            ..MotionDelta::default()
+        },
+        PresetId::Rotate | PresetId::RotateOut => MotionDelta {
+            rotation: if is_out {
+                12.0 * intensity * t
+            } else {
+                -12.0 * intensity * (1.0 - t)
+            },
+            ..MotionDelta::default()
+        },
         _ => MotionDelta::default(),
     }
 }
@@ -415,6 +541,7 @@ impl Animation {
         self.transform_at_duration(base, x, 1.0)
     }
 
+    /// The clip's transform at `x` (fraction of its length), given its full duration in seconds.
     pub fn transform_at_duration(&self, base: Transform, x: f64, duration: f64) -> Transform {
         let mut transform = Transform {
             scale: (base.scale * self.scale.value_at(x, 1.0)).max(0.001),
@@ -446,6 +573,7 @@ impl Animation {
         self.opacity_at_duration(base, x, 1.0)
     }
 
+    /// The clip's opacity at `x` (fraction of its length), given its full duration in seconds.
     pub fn opacity_at_duration(&self, base: f32, x: f64, duration: f64) -> f32 {
         let mut opacity = f64::from(base) * self.opacity.value_at(x, 1.0);
         if let Some(preset) = self.presets.entrance {

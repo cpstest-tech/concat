@@ -3848,6 +3848,7 @@ mod tests {
                 }),
                 duration: Some(2.5),
                 offset_y: Some(0.38),
+                animations: None,
             })
             .expect("adds")
             .created_id
@@ -3907,6 +3908,7 @@ mod tests {
                 }),
                 duration: Some(5.0),
                 offset_y: None,
+                animations: None,
             })
             .expect("adds")
             .created_id
@@ -3987,6 +3989,7 @@ mod tests {
                 }),
                 duration: Some(5.0),
                 offset_y: None,
+                animations: None,
             })
             .expect("adds")
             .created_id
@@ -4033,6 +4036,7 @@ mod tests {
                 }),
                 duration: Some(5.0),
                 offset_y: None,
+                animations: None,
             })
             .expect("adds")
             .created_id
@@ -4087,6 +4091,7 @@ mod tests {
                 }),
                 duration: Some(5.0),
                 offset_y: None,
+                animations: None,
             })
             .expect("adds")
             .created_id
@@ -4682,6 +4687,7 @@ mod tests {
                 }),
                 duration: None,
                 offset_y: None,
+                animations: None,
             })
             .expect("adds")
             .created_id
@@ -4750,6 +4756,7 @@ mod tests {
                 style: Some(TextStyle::default()),
                 duration: Some(2.0),
                 offset_y: Some(0.4),
+                animations: None,
             },
             Command::MoveClips {
                 moves: vec![ClipMove {

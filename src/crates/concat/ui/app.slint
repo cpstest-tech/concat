@@ -252,6 +252,9 @@ export component App inherits Window {
     callback export-ten-bit-changed(on: bool);
     callback export-hdr-changed(on: bool);
     callback export-bitrate-changed(mbps: float);
+    callback export-match-best-media();
+    callback export-open-file();
+    callback export-open-in-editor();
     callback export-start();
     callback export-cancel();
     callback export-reveal();
@@ -326,6 +329,8 @@ export component App inherits Window {
     callback captions-import-srt();
     callback captions-export-srt();
     callback captions-edit();
+    callback captions-editor-closed();
+    callback captions-edit-row(id: string, text: string, start: string, end: string);
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
@@ -708,6 +713,8 @@ export component App inherits Window {
             import-srt => { root.captions-import-srt(); }
             export-srt => { root.captions-export-srt(); }
             edit-captions => { root.captions-edit(); }
+            editor-closed => { root.captions-editor-closed(); }
+            edit-row(id, text, start, end) => { root.captions-edit-row(id, text, start, end); }
         }
 
         SpeechDialog {
@@ -820,6 +827,9 @@ export component App inherits Window {
         ten-bit-changed(on) => { root.export-ten-bit-changed(on); }
         hdr-changed(on) => { root.export-hdr-changed(on); }
         bitrate-changed(mbps) => { root.export-bitrate-changed(mbps); }
+        match-best-media => { root.export-match-best-media(); }
+        open-file => { root.export-open-file(); }
+        open-in-editor => { root.export-open-in-editor(); }
         begin => { root.export-start(); }
         cancel => { root.export-cancel(); }
         reveal => { root.export-reveal(); }

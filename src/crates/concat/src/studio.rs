@@ -604,6 +604,7 @@ pub struct DropPlan {
     pub start: f32,
     pub duration: f32,
     pub row: i32,
+    pub is_new_track: bool,
 }
 
 /// Every model the window is handed, kept for its lifetime rather than
@@ -1652,6 +1653,9 @@ fn clip_commands(id: &str, before: &Clip, after: &Clip, magnetic: bool) -> Vec<C
     if after.mask != before.mask {
         patch.mask = Some(after.mask);
     }
+    if after.animations != before.animations {
+        patch.animations = Some(Some(after.animations.clone()));
+    }
     commands.extend(key_commands(id, before, after));
     if after.text != before.text {
         patch.text = Some(after.text.clone());
@@ -2584,6 +2588,19 @@ impl Studio {
             .lane_view
             .get(track_id)
             .is_some_and(|view| view.locked)
+    }
+
+    pub fn is_track_magnetic(&self, track_id: &str) -> bool {
+        self.timeline()
+            .tracks
+            .iter()
+            .find(|t| t.id == track_id)
+            .map_or(false, |t| t.magnetic)
+    }
+
+    pub fn is_clip_track_magnetic(&self, clip_id: &str) -> bool {
+        self.clip(clip_id)
+            .map_or(false, |clip| self.is_track_magnetic(&clip.track_id))
     }
 
     fn lane_size(&self, track_id: &str) -> TrackSize {
@@ -3798,6 +3815,7 @@ impl Studio {
                     }
                     .max(MIN_DURATION),
                     row: 0,
+                    is_new_track: false,
                 })
             }
             // A title: the preset's id rides where a file's media id would,
@@ -3809,6 +3827,7 @@ impl Studio {
                 start: 0.0,
                 duration: LAYER_DURATION,
                 row: 0,
+                is_new_track: false,
             }),
             // A figure from the Stickers page: the shape's name rides
             // where a file's media id would, and the label is what the
@@ -3820,6 +3839,7 @@ impl Studio {
                 start: 0.0,
                 duration: LAYER_DURATION,
                 row: 0,
+                is_new_track: false,
             }),
             // A sound from the Audio page: not in the bin yet, so its card
             // rides in `media` behind `sound:`, and the drop imports it.
@@ -3832,6 +3852,7 @@ impl Studio {
                     start: 0.0,
                     duration: (duration as f32).max(MIN_DURATION),
                     row: 0,
+                    is_new_track: false,
                 })
             }
             // A look dragged from the Filters page: a layer over a span.
@@ -3843,29 +3864,136 @@ impl Studio {
                 start: 0.0,
                 duration: LAYER_DURATION,
                 row: 0,
+                is_new_track: false,
             }),
+            // A clip dragged directly from the timeline.
+            "clip" => {
+                let clip = self.timeline().clips.iter().find(|c| c.id == id)?;
+                Some(DropPlan {
+                    kind: match clip.kind {
+                        model::ClipKind::Audio => ClipKind::Audio,
+                        model::ClipKind::Image => ClipKind::Image,
+                        model::ClipKind::Video => ClipKind::Video,
+                        model::ClipKind::Text => ClipKind::Text,
+                        model::ClipKind::Shape => ClipKind::Shape,
+                        model::ClipKind::Layer => ClipKind::Filter,
+                    },
+                    label: if clip.name.is_empty() {
+                        clip.id.clone()
+                    } else {
+                        clip.name.clone()
+                    },
+                    media: format!("clip:{id}"),
+                    start: clip.start as f32,
+                    duration: (clip.duration as f32).max(MIN_DURATION),
+                    row: self.row_of(&clip.track_id),
+                    is_new_track: false,
+                })
+            }
+            // A file dragged directly from the file manager.
+            "file" => {
+                let p = std::path::Path::new(id);
+                let name = p
+                    .file_name()
+                    .map_or("File", |s| s.to_str().unwrap_or("File"))
+                    .to_string();
+                let ext = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                let kind = match ext.as_str() {
+                    "mp3" | "wav" | "m4a" | "flac" | "aac" | "ogg" => ClipKind::Audio,
+                    "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "svg" => ClipKind::Image,
+                    _ => ClipKind::Video,
+                };
+                let duration = if kind == ClipKind::Image {
+                    LAYER_DURATION
+                } else {
+                    concat_media::probe(id)
+                        .ok()
+                        .and_then(|info| info.duration)
+                        .map(|d| d.numerator() as f32 / d.denominator().max(1) as f32)
+                        .unwrap_or(5.0)
+                        .max(MIN_DURATION)
+                };
+                Some(DropPlan {
+                    kind,
+                    label: name,
+                    media: format!("file:{id}"),
+                    start: 0.0,
+                    duration,
+                    row: 0,
+                    is_new_track: false,
+                })
+            }
             _ => None,
         }
     }
 
     /// A drag over the lanes: the pointer names the moment and the lane.
-    pub fn plan(&self, payload: &str, seconds: f32, row: i32) -> Option<DropPlan> {
+    pub fn plan(
+        &self,
+        payload: &str,
+        seconds: f32,
+        row: i32,
+        is_new_track: bool,
+    ) -> Option<DropPlan> {
         let mut plan = self.incoming(payload)?;
         let lanes = self.timeline().tracks.len() as i32;
-        if lanes == 0 {
+        if lanes == 0 && !is_new_track {
             return None;
         }
-        plan.row = row.clamp(0, lanes - 1);
-        if self
-            .row_track(plan.row)
-            .is_none_or(|track| self.locked(&track.id))
-        {
-            return None;
+        if is_new_track {
+            plan.is_new_track = true;
+            plan.row = 0;
+        } else {
+            plan.is_new_track = false;
+            plan.row = row.clamp(0, lanes.max(1) - 1);
+            if self
+                .row_track(plan.row)
+                .is_none_or(|track| self.locked(&track.id))
+            {
+                return None;
+            }
         }
         plan.start = self
             .snapped(seconds.max(0.0), 8.0 * self.lanes.seconds_per_pixel, "")
             .max(0.0);
         Some(plan)
+    }
+
+    /// Translates window cursor coordinates (x, y) into timeline target parameters:
+    /// (seconds, row, is_new_track) if (x, y) is over the timeline pane.
+    pub fn timeline_drop_target(&self, x: f32, y: f32) -> Option<(f32, i32, bool)> {
+        if self.on_start {
+            return None;
+        }
+        let (wx, wy) = (x, y - 32.0); // 32px titlebar
+        let layout = self.dock_layout();
+        let seat = layout.seats.iter().find(|s| s.kind == PaneKind::Timeline)?;
+        if wx < seat.x || wx > seat.x + seat.width || wy < seat.y || wy > seat.y + seat.height {
+            return None;
+        }
+        let rel_x = wx - seat.x;
+        let rel_y = wy - seat.y;
+        let headers_w = (seat.width / 2.0).min(200.0);
+        if rel_x < headers_w {
+            return None;
+        }
+        let ruler_top = 76.0;
+        let ruler_height = 28.0;
+        let x_in_lanes = rel_x - headers_w;
+        let seconds =
+            (self.lanes.scroll_left + x_in_lanes.max(0.0) * self.lanes.seconds_per_pixel).max(0.0);
+        let is_new_track = rel_y < ruler_top + ruler_height + 12.0;
+        let row = if is_new_track {
+            -1
+        } else {
+            let y_in_tracks = rel_y - (ruler_top + ruler_height);
+            self.row_at(y_in_tracks)
+        };
+        Some((seconds, row, is_new_track))
     }
 
     /// The bin's selection, in the bin's order, when `media_id` is one card
@@ -3892,9 +4020,75 @@ impl Studio {
             .and_then(|ids| ids.first().cloned())
             .unwrap_or_else(|| plan.media.clone());
         let frame = self.first_visual_frame(&first_media);
-        let Some(track_id) = self.row_track(plan.row).map(|track| track.id.clone()) else {
+        let start = f64::from(plan.start);
+        let _duration = f64::from(plan.duration);
+        let clip_dragged = plan.media.strip_prefix("clip:");
+
+        let track_id = if plan.is_new_track {
+            self.apply(Command::AddTrack { bottom: false })
+        } else {
+            self.row_track(plan.row).map(|track| track.id.clone())
+        };
+
+        let Some(track_id) = track_id else {
             return;
         };
+
+        if let Some(clip_id) = clip_dragged {
+            self.apply(Command::MoveClips {
+                moves: vec![concat_project::commands::ClipMove {
+                    clip_id: clip_id.to_string(),
+                    start,
+                    track_id: track_id.clone(),
+                }],
+            });
+            self.selection = vec![clip_id.to_string()];
+            return;
+        }
+
+        if let Some(file_path) = plan.media.strip_prefix("file:") {
+            let path_buf = std::path::PathBuf::from(file_path);
+            let existing_id = self
+                .project()
+                .media
+                .iter()
+                .find(|m| m.path == path_buf)
+                .map(|m| m.id.clone());
+            let media_id = match existing_id {
+                Some(id) => Some(id),
+                None => match concat_host::media::probe(&path_buf.to_string_lossy()) {
+                    Ok(summary) => {
+                        let item = summary.to_new_media();
+                        let path = item.path.clone();
+                        self.apply(Command::AddMedia { item }).or_else(|| {
+                            self.project()
+                                .media
+                                .iter()
+                                .find(|item| item.path == path)
+                                .map(|item| item.id.clone())
+                        })
+                    }
+                    Err(_) => None,
+                },
+            };
+            if let Some(media_id) = media_id {
+                let frame = self.first_visual_frame(&media_id);
+                let created = self.apply_with_first_frame(
+                    frame,
+                    Command::AddClip {
+                        media_id,
+                        track_id,
+                        start,
+                        ripple: true,
+                    },
+                );
+                if let Some(id) = created {
+                    self.selection = vec![id];
+                }
+            }
+            return;
+        }
+
         if let Some(card) = plan.media.strip_prefix("sound:") {
             self.place_card(card, Some(track_id), f64::from(plan.start));
             return;
@@ -3948,6 +4142,41 @@ impl Studio {
         };
         if let Some(id) = created {
             self.selection = vec![id];
+        }
+    }
+
+    /// Opens the exported video in ConCat's own monitor player.
+    pub fn open_exported_in_editor(&mut self) {
+        let path = std::path::PathBuf::from(self.export.written.clone());
+        if path.exists() {
+            let media_id = self
+                .project()
+                .media
+                .iter()
+                .find(|m| m.path == path)
+                .map(|m| m.id.clone())
+                .or_else(|| {
+                    if let Ok(summary) = concat_host::media::probe(&path.to_string_lossy()) {
+                        let item = summary.to_new_media();
+                        let p = item.path.clone();
+                        self.apply(Command::AddMedia { item }).or_else(|| {
+                            self.project()
+                                .media
+                                .iter()
+                                .find(|item| item.path == p)
+                                .map(|item| item.id.clone())
+                        })
+                    } else {
+                        None
+                    }
+                });
+            self.export.open = false;
+            if let Some(id) = media_id {
+                self.preview_media(&id, 0);
+                if !self.source.as_ref().map_or(false, |s| s.playing) {
+                    self.source_toggle();
+                }
+            }
         }
     }
 
@@ -4082,6 +4311,7 @@ impl Studio {
             duration: Some(duration),
             offset_y,
             above: true,
+            animations: None,
         };
         match font {
             Some((family, path)) => self.apply(Command::Batch {
@@ -5077,7 +5307,7 @@ impl Studio {
                 let speed = self.clip(&id).map_or(1.0, |clip| clip.speed as f32);
                 // A plain trim stops at the neighbours, as the command will;
                 // a magnetic one moves them, so the lane is all its room.
-                let (floor, ceiling) = if self.prefs.magnetic {
+                let (floor, ceiling) = if self.is_clip_track_magnetic(&id) {
                     (0.0, f32::INFINITY)
                 } else {
                     self.timeline()
@@ -5209,7 +5439,7 @@ impl Studio {
                         delta,
                         // Magnetic: the lane closes behind the edge.
                         // https://github.com/jub0t/Concat/issues/106
-                        ripple: self.prefs.magnetic,
+                        ripple: self.is_clip_track_magnetic(&id),
                     });
                     // Trim follow: a magnetic head trim slides the clip back
                     // into the gap, and the playhead goes with its first
@@ -5530,12 +5760,25 @@ impl Studio {
     /// This is a normal project command, so it serializes and participates
     /// in undo/redo like the rest of the inspector.
     pub fn clip_animation_set(&mut self, slot: i32, id: &str, duration: f32) {
-        let Some(clip_id) = self.selection.first().cloned() else { return };
-        let Some((kind, clip_duration)) = self.clip(&clip_id).map(|clip| (clip.kind, clip.duration)) else { return };
-        if !matches!(kind, model::ClipKind::Video | model::ClipKind::Image | model::ClipKind::Text) { return; }
+        let Some(clip_id) = self.selection.first().cloned() else {
+            return;
+        };
+        let Some((kind, clip_duration)) =
+            self.clip(&clip_id).map(|clip| (clip.kind, clip.duration))
+        else {
+            return;
+        };
+        if !matches!(
+            kind,
+            model::ClipKind::Video | model::ClipKind::Image | model::ClipKind::Text
+        ) {
+            return;
+        }
         self.commit_targets = vec![clip_id.clone()];
         self.begin_echo();
-        let Some(clip) = self.echo_clip_mut(&clip_id) else { return };
+        let Some(clip) = self.echo_clip_mut(&clip_id) else {
+            return;
+        };
         let mut animations = clip.animations.clone();
         let value = if id.is_empty() {
             None
@@ -5547,11 +5790,20 @@ impl Studio {
             })
         };
         match slot {
-            0 => { animations.entrance = value; animations.combo = None; }
-            1 => { animations.exit = value; animations.combo = None; }
+            0 => {
+                animations.entrance = value;
+                animations.combo = None;
+            }
+            1 => {
+                animations.exit = value;
+                animations.combo = None;
+            }
             2 => {
                 animations.combo = value;
-                if animations.combo.is_some() { animations.entrance = None; animations.exit = None; }
+                if animations.combo.is_some() {
+                    animations.entrance = None;
+                    animations.exit = None;
+                }
             }
             _ => return,
         }
@@ -5827,7 +6079,8 @@ impl Studio {
             ) else {
                 continue;
             };
-            commands.extend(clip_commands(id, before, after, self.prefs.magnetic));
+            let is_mag = self.is_track_magnetic(&after.track_id);
+            commands.extend(clip_commands(id, before, after, is_mag));
         }
         if commands.is_empty() {
             return;
@@ -7810,13 +8063,10 @@ impl Studio {
             })
             .cloned()
             .collect();
-        let Some(command) = concat_project::delete_to_playhead(
-            self.timeline(),
-            &ids,
-            at,
-            side,
-            self.prefs.magnetic,
-        ) else {
+        let is_mag = ids.iter().any(|id| self.is_clip_track_magnetic(id));
+        let Some(command) =
+            concat_project::delete_to_playhead(self.timeline(), &ids, at, side, is_mag)
+        else {
             self.notify(&t("studio.parkPlayheadInsideClip"), true);
             return;
         };
@@ -8278,6 +8528,7 @@ impl Studio {
                     style: source.text.clone(),
                     duration: Some(source.duration),
                     offset_y: Some(source.offset_y),
+                    animations: Some(source.animations.clone()),
                 },
             );
         }
@@ -9242,6 +9493,7 @@ impl Studio {
                         visible: lane.visible,
                         muted: lane.muted,
                         locked: self.locked(&lane.id),
+                        magnetic: lane.magnetic,
                         size: self.lane_size(&lane.id),
                         height,
                         top,
@@ -9362,6 +9614,7 @@ impl Studio {
                 start: plan.start,
                 duration: plan.duration,
                 row: plan.row,
+                is_new_track: plan.is_new_track,
             },
             None => DropData::default(),
         });
@@ -10723,12 +10976,45 @@ impl Studio {
             name: clip.name.as_str().into(),
             kind: kind_of(clip),
             duration: clip.duration as f32,
-            animation_in_id: clip.animations.entrance.as_ref().map(|value| value.id.as_str()).unwrap_or("").into(),
-            animation_in_duration: clip.animations.entrance.as_ref().map(|value| value.duration as f32).unwrap_or(0.5),
-            animation_out_id: clip.animations.exit.as_ref().map(|value| value.id.as_str()).unwrap_or("").into(),
-            animation_out_duration: clip.animations.exit.as_ref().map(|value| value.duration as f32).unwrap_or(0.5),
-            animation_combo_id: clip.animations.combo.as_ref().map(|value| value.id.as_str()).unwrap_or("").into(),
-            animation_combo_duration: clip.animations.combo.as_ref().map(|value| value.duration as f32).unwrap_or(clip.duration as f32),
+            animation_in_id: clip
+                .animations
+                .entrance
+                .as_ref()
+                .map(|value| value.id.as_str())
+                .unwrap_or("")
+                .into(),
+            animation_in_duration: clip
+                .animations
+                .entrance
+                .as_ref()
+                .map(|value| value.duration as f32)
+                .unwrap_or(0.5),
+            animation_out_id: clip
+                .animations
+                .exit
+                .as_ref()
+                .map(|value| value.id.as_str())
+                .unwrap_or("")
+                .into(),
+            animation_out_duration: clip
+                .animations
+                .exit
+                .as_ref()
+                .map(|value| value.duration as f32)
+                .unwrap_or(0.5),
+            animation_combo_id: clip
+                .animations
+                .combo
+                .as_ref()
+                .map(|value| value.id.as_str())
+                .unwrap_or("")
+                .into(),
+            animation_combo_duration: clip
+                .animations
+                .combo
+                .as_ref()
+                .map(|value| value.duration as f32)
+                .unwrap_or(clip.duration as f32),
             transition_id: clip
                 .transition_in
                 .as_ref()
@@ -11326,7 +11612,8 @@ impl Studio {
         editor.set_media_selected_count(self.media.selected.len() as i32);
         editor.set_media_filter(self.media.filter);
         editor.set_media_jump_token(self.media_jump);
-        editor.set_importing(false);
+        editor.set_importing(self.media.importing);
+        editor.set_import_progress(self.media.import_progress);
 
         let (width, height) = self.output_size();
         editor.set_output_width(width as i32);
@@ -12060,7 +12347,14 @@ impl Studio {
 
     /// The clip's track flags, as one command per flag that changed, plus
     /// the lock, which is the window's.
-    pub fn track_flags(&mut self, row: i32, visible: bool, muted: bool, locked: bool) {
+    pub fn track_flags(
+        &mut self,
+        row: i32,
+        visible: bool,
+        muted: bool,
+        locked: bool,
+        magnetic: bool,
+    ) {
         let Some(track) = self.row_track(row).cloned() else {
             return;
         };
@@ -12077,6 +12371,13 @@ impl Studio {
                 track_id: track.id.clone(),
                 flag: TrackFlag::Muted,
                 value: muted,
+            });
+        }
+        if track.magnetic != magnetic {
+            commands.push(Command::SetTrackFlag {
+                track_id: track.id.clone(),
+                flag: TrackFlag::Magnetic,
+                value: magnetic,
             });
         }
         let view = self.lanes.lane_view.entry(track.id.clone()).or_default();
@@ -12427,7 +12728,7 @@ impl Studio {
             // A clip that is part of the selection takes the selection with
             // it: Delete on one of five selected clips means the five.
             "delete" | "ripple-delete" => {
-                let ripple = action == "ripple-delete" || self.prefs.magnetic;
+                let ripple = action == "ripple-delete" || self.is_clip_track_magnetic(id);
                 if self.selection.len() > 1 && self.selection.iter().any(|held| held == id) {
                     self.remove_selected(ripple);
                 } else {

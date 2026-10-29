@@ -48,7 +48,7 @@ pub struct ExportSpec {
 }
 
 /// One progress report: which frame of how many, in which stage.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Progress {
     /// Frames done.
     pub frame: i64,
@@ -56,6 +56,8 @@ pub struct Progress {
     pub total: i64,
     /// What the exporter is doing: "video", "audio", "mux".
     pub stage: &'static str,
+    /// Downsampled thumbnail of the current frame, if available.
+    pub thumbnail: Option<concat_core::frame::Frame>,
 }
 
 /// The session flattened into a request the engine can render.
@@ -107,11 +109,16 @@ pub fn run_on(
     cancel: &AtomicBool,
     mut progress: impl FnMut(Progress),
 ) -> Result<String, String> {
+    let last_thumb = std::cell::RefCell::new(None);
+    let mut on_preview = |frame: &concat_core::frame::Frame| {
+        *last_thumb.borrow_mut() = Some(downsample_thumbnail(frame, 640));
+    };
     let mut report = |frame: i64, total: i64, stage: &'static str| {
         progress(Progress {
             frame,
             total,
             stage,
+            thumbnail: last_thumb.borrow_mut().take(),
         });
     };
     render_on(
@@ -120,8 +127,36 @@ pub fn run_on(
         Reporter {
             progress: &mut report,
             cancel,
+            frame_preview: Some(&mut on_preview),
         },
     )
+}
+
+fn downsample_thumbnail(
+    frame: &concat_core::frame::Frame,
+    target_width: u32,
+) -> concat_core::frame::Frame {
+    let w = frame.width();
+    let h = frame.height();
+    if w <= target_width || target_width == 0 {
+        return frame.clone();
+    }
+    let factor = w as f32 / target_width as f32;
+    let target_height = ((h as f32 / factor).round() as u32).max(1);
+    let mut out = Vec::with_capacity((target_width * target_height * 4) as usize);
+    for y in 0..target_height {
+        let src_y = ((y as f32 * factor) as u32).min(h - 1);
+        for x in 0..target_width {
+            let src_x = ((x as f32 * factor) as u32).min(w - 1);
+            if let Some(p) = frame.pixel(src_x, src_y) {
+                out.extend_from_slice(&p);
+            } else {
+                out.extend_from_slice(&[0, 0, 0, 255]);
+            }
+        }
+    }
+    concat_core::frame::Frame::from_rgba(target_width, target_height, out)
+        .unwrap_or_else(|| concat_core::frame::Frame::black(target_width, target_height))
 }
 
 /// The slot for the one export that can run at a time - enforced, not
