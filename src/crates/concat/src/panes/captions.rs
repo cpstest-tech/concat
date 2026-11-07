@@ -265,10 +265,6 @@ impl CaptionsPane {
             }
             CaptionsMsg::SizeChanged(index) => self.size = (index.max(0) as usize).min(2),
             CaptionsMsg::TemplateChanged(index) => self.template = (index.max(0) as usize).min(1),
-            CaptionsMsg::LanguageChanged(index) => {
-                self.language = language_at(index);
-                studio.prefs.caption_language = self.language.clone();
-            }
             CaptionsMsg::Begin => {
                 if self.from_voice {
                     self.run_sound(studio);
@@ -710,6 +706,7 @@ impl CaptionsPane {
             self.running = true;
             self.message.clear();
             let word_timestamps = self.template == 1;
+            let language = self.language.clone();
             let epoch = crate::host::project_epoch();
             spawn_in_project(
                 move || {
@@ -728,8 +725,11 @@ impl CaptionsPane {
                         audio_stream: None,
                         source_start: 0.0,
                         window: timeline_end,
-                        model_id: model,
+                        model_id: model.clone(),
                         word_timestamps,
+                        language: (!concat_speech::transcribe::english_only(&model))
+                            .then(|| language.clone())
+                            .flatten(),
                     };
                     let result = transcriber.transcribe(&dirs, &request, move |stage| {
                         on_ui_in_project(epoch, move |studio, _, _| {
