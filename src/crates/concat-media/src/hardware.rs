@@ -168,6 +168,101 @@ impl HwDevice {
     }
 }
 
+/// Enables Mesa ANV's Vulkan Video decode extension (`ANV_DEBUG=video-decode`)
+/// on Linux for Intel Iris / UHD integrated GPUs before a Vulkan instance is
+/// created.
+///
+/// # Safety
+/// Must be called before other threads read or mutate the process environment,
+/// or from the single-threaded startup path.
+pub unsafe fn enable_intel_experimental_decode() {
+    #[cfg(target_os = "linux")]
+    {
+        const FLAG: &str = "video-decode";
+        let flags = match std::env::var("ANV_DEBUG") {
+            Ok(flags) if flags.split(',').any(|flag| flag == FLAG) => return,
+            Ok(flags) if !flags.is_empty() => format!("{flags},{FLAG}"),
+            _ => FLAG.to_owned(),
+        };
+        // SAFETY: caller upholds environment mutation contract.
+        unsafe { std::env::set_var("ANV_DEBUG", flags) };
+    }
+}
+
+/// Default budget for hardware decode DPB surfaces across all open decoders:
+/// an eighth of physical RAM on Unix (where integrated GPUs such as Intel
+/// Iris and Apple Silicon share system memory), or 1 GB otherwise.
+pub fn default_budget_bytes() -> usize {
+    #[cfg(unix)]
+    {
+        // SAFETY: plain sysconf queries; -1 on failure.
+        let (pages, page_size) = unsafe {
+            (
+                libc::sysconf(libc::_SC_PHYS_PAGES),
+                libc::sysconf(libc::_SC_PAGESIZE),
+            )
+        };
+        if pages > 0 && page_size > 0 {
+            return (pages as usize).saturating_mul(page_size as usize) / 8;
+        }
+    }
+    1_000_000_000
+}
+
+static SURFACE_BUDGET: LazyLock<AtomicUsize> =
+    LazyLock::new(|| AtomicUsize::new(default_budget_bytes()));
+static SURFACE_USED: AtomicUsize = AtomicUsize::new(0);
+
+/// Sets the maximum bytes of hardware decode DPB surfaces all decoders may
+/// hold together before new preference-driven readers fall back to software.
+pub fn set_budget_bytes(bytes: usize) {
+    SURFACE_BUDGET.store(bytes, Ordering::Relaxed);
+}
+
+/// Approximate bytes of hardware surfaces a decoder for a `width` × `height`
+/// stream in `format` allocates: 16 DPB reference frames (H.264/HEVC max),
+/// `extra_hw_frames` (2) and the surface currently being decoded.
+pub(crate) fn surfaces_bytes(width: u32, height: u32, format: Pixel) -> usize {
+    let deep = format
+        .descriptor()
+        .is_some_and(|descriptor| unsafe { (*descriptor.as_ptr()).comp[0].depth } > 8);
+    let luma = (width as usize).saturating_mul(height as usize);
+    let frame = (luma + luma / 2) * if deep { 2 } else { 1 };
+    frame.saturating_mul(16 + 2 + 1)
+}
+
+/// A decoder's share of [`SURFACE_BUDGET`], returned when the decoder drops
+/// or moves to software.
+pub(crate) struct SurfaceLease(usize);
+
+impl SurfaceLease {
+    /// Claims `bytes` from the surface budget, or returns `None` when the
+    /// budget is full.
+    pub(crate) fn take(bytes: usize) -> Option<Self> {
+        let budget = SURFACE_BUDGET.load(Ordering::Relaxed);
+        SURFACE_USED
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+                (used.saturating_add(bytes) <= budget).then_some(used + bytes)
+            })
+            .ok()
+            .map(|_| Self(bytes))
+    }
+
+    /// An unbudgeted lease for callers that explicitly requested a named
+    /// hardware device (`HwPolicy::Device`).
+    pub(crate) const fn unbudgeted() -> Self {
+        Self(0)
+    }
+}
+
+impl Drop for SurfaceLease {
+    fn drop(&mut self) {
+        if self.0 > 0 {
+            SURFACE_USED.fetch_sub(self.0, Ordering::AcqRel);
+        }
+    }
+}
+
 /// Probes the safe Linux hardware decode backends once per process: NVDEC
 /// (`Cuda`) first on NVIDIA GPUs, then `Vulkan`. VAAPI is never picked
 /// unasked (issue #70).

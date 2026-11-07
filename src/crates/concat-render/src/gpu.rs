@@ -3135,7 +3135,9 @@ impl WgpuCompositor {
         self.used.values_mut().for_each(|used| *used = 0);
         self.composites += 1;
         let ground = self.claim(width, height);
-        let ground_view = self.pool[&(width, height)][ground].view.clone();
+        let ground_view = self.pool[&(width, height)][ground]
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let from_view = from_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let to_view = to_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let encoder = self.encode_transition(

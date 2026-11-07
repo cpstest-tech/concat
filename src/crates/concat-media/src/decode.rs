@@ -37,14 +37,14 @@ use ffmpeg_the_third::util::frame::video::Video;
 use crate::error::{Error, Result};
 use crate::feed;
 use crate::ffi;
-use crate::hardware::{self, Device, HwDevice, HwPolicy, Seat};
+use crate::hardware::{self, Device, HwDevice, HwPolicy, Seat, SurfaceLease};
 
 /// How [`Decoder::open_codec`] opens the codec.
 enum Codec<'a> {
     /// libavcodec's own decoder for the stream, on the CPU.
     Software,
     /// libavcodec's own decoder, with this hwaccel device attached.
-    On(&'a Device),
+    On(&'a Device, SurfaceLease),
     /// A decoder by name in place of the built-in one: the platform's
     /// decoder wrapped as a codec, MediaCodec's.
     Named(&'static str),
@@ -53,8 +53,13 @@ enum Codec<'a> {
 /// Where a reader's codec runs when it is not plain software.
 enum OnChip {
     /// A hwaccel: frames arrive in the device's memory, in this format,
-    /// and are copied back.
-    Accel(HwDevice, Pixel),
+    /// and are copied back. Holds its share of the hardware surface budget
+    /// for as long as the hardware codec stays open.
+    Accel {
+        device: HwDevice,
+        format: Pixel,
+        _lease: SurfaceLease,
+    },
     /// The platform's own decoder behind a codec of its own: frames arrive
     /// in memory already. Holds its seat on the chip for as long as it
     /// lasts; see [`hardware::MEDIACODEC_READERS`].
@@ -64,7 +69,7 @@ enum OnChip {
 impl OnChip {
     fn device(&self) -> HwDevice {
         match self {
-            OnChip::Accel(device, _) | OnChip::Wrapped { device, .. } => *device,
+            OnChip::Accel { device, .. } | OnChip::Wrapped { device, .. } => *device,
         }
     }
 }
@@ -678,7 +683,8 @@ impl Decoder {
             )
         };
         let software = || Self::open_codec(path, &stream, options, Codec::Software);
-        let chosen_device = if options.hardware == HwPolicy::Preference && hardware::has_failed(path)
+        let chosen_device = if options.hardware == HwPolicy::Preference
+            && (options.keyframes_only || hardware::has_failed(path))
         {
             None
         } else {
@@ -728,23 +734,32 @@ impl Decoder {
                     None => software()?,
                 }
             }
-            Some(device) => match hardware::device(device) {
-                Some(device) => {
-                    match Self::open_codec(path, &stream, options, Codec::On(&device)) {
-                        Ok(opened) => opened,
-                        Err(error) => {
-                            hardware::mark_failed(path);
-                            hardware::note_fallback(
-                                device.kind(),
-                                "open the decoder",
-                                &error.to_string(),
-                            );
-                            software()?
+            Some(device) => {
+                let lease = if options.hardware == HwPolicy::Preference {
+                    let bytes =
+                        hardware::surfaces_bytes(coded.0.max(0) as u32, coded.1.max(0) as u32, format);
+                    hardware::SurfaceLease::take(bytes)
+                } else {
+                    Some(hardware::SurfaceLease::unbudgeted())
+                };
+                match (lease, hardware::device(device)) {
+                    (Some(lease), Some(device)) => {
+                        match Self::open_codec(path, &stream, options, Codec::On(&device, lease)) {
+                            Ok(opened) => opened,
+                            Err(error) => {
+                                hardware::mark_failed(path);
+                                hardware::note_fallback(
+                                    device.kind(),
+                                    "open the decoder",
+                                    &error.to_string(),
+                                );
+                                software()?
+                            }
                         }
                     }
+                    _ => software()?,
                 }
-                None => software()?,
-            },
+            }
             None => software()?,
         };
         // The caller's word over the file's, where the caller has one: the
@@ -849,10 +864,14 @@ impl Decoder {
         }
         let (accelerated, named) = match codec {
             Codec::Software => (None, None),
-            Codec::On(device) => (
+            Codec::On(device, lease) => (
                 device
                     .attach(&mut context)
-                    .map(|format| OnChip::Accel(device.kind(), format)),
+                    .map(|format| OnChip::Accel {
+                        device: device.kind(),
+                        format,
+                        _lease: lease,
+                    }),
                 None,
             ),
             Codec::Named(name) => {
@@ -1038,7 +1057,7 @@ impl Decoder {
                 .timestamp()
                 .and_then(|ticks| ffi::seconds(ticks, self.time_base))
                 .map(|pts| pts - self.start);
-            if let Some(&OnChip::Accel(device, format)) = self.hardware.as_ref()
+            if let Some(&OnChip::Accel { device, format, .. }) = self.hardware.as_ref()
                 && frame.format() != format
             {
                 // The codec set the device up for this stream and the
@@ -1062,7 +1081,7 @@ impl Decoder {
             {
                 continue;
             }
-            if let Some(&OnChip::Accel(device, format)) = self.hardware.as_ref()
+            if let Some(&OnChip::Accel { device, format, .. }) = self.hardware.as_ref()
                 && frame.format() == format
             {
                 frame = match hardware::download(&frame) {

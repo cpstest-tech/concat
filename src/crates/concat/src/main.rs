@@ -17,6 +17,10 @@ fn main() -> Result<(), slint::PlatformError> {
     // but an exit code (#326). It writes to standard error until the log
     // opens, and to both after.
     concat_host::crash::catch();
+    // SAFETY: single-threaded startup before any Vulkan instance or worker
+    // thread is created. Enables Mesa ANV Vulkan Video decode on Intel Iris
+    // integrated GPUs on Linux.
+    unsafe { concat_media::hardware::enable_intel_experimental_decode() };
     let launch = launch::parse(std::env::args_os().skip(1));
     // Before the log, the GPU and the window: all this proves is that the
     // executable and the libraries it links were loaded, and it should
