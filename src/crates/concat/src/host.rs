@@ -226,19 +226,64 @@ pub fn spawn_in_project<T: Send + 'static>(
     spawn_detached(move || deliver(Some(epoch), work(), then));
 }
 
-/// [`spawn_in_project`] for the monitor's frames. While playback runs a
-/// frame arrives every few dozen milliseconds and changes nothing but the
-/// picture, so only the picture is published then; the transport's own
-/// tick publishes the lanes. Otherwise it is a full publish as usual, and
-/// so is a frame that raised a toast - a failed one says so at once, not
-/// when playback stops.
+/// Runs `work` on the monitor's own single-slot latest-wins worker thread, so
+/// interactive preview frames never wait in the general FIFO worker queue
+/// behind background probes, cards or audio jobs.
+fn spawn_on_frame_worker(work: impl FnOnce() + Send + 'static) {
+    type Slot = (
+        std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+        std::sync::Condvar,
+    );
+    static WORKER: std::sync::OnceLock<Arc<Slot>> = std::sync::OnceLock::new();
+    let slot = WORKER.get_or_init(|| {
+        let pair: Arc<Slot> = Arc::new((
+            std::sync::Mutex::new(None),
+            std::sync::Condvar::new(),
+        ));
+        let worker = Arc::clone(&pair);
+        std::thread::Builder::new()
+            .name("concat-monitor".into())
+            .spawn(move || {
+                let (lock, cvar) = &*worker;
+                loop {
+                    let job = {
+                        let mut guard = lock
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        while guard.is_none() {
+                            guard = cvar
+                                .wait(guard)
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        }
+                        guard.take()
+                    };
+                    if let Some(job) = job {
+                        job();
+                    }
+                }
+            })
+            .expect("a monitor worker thread");
+        pair
+    });
+    let (lock, cvar) = &**slot;
+    *lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(work));
+    cvar.notify_one();
+}
+
+/// [`spawn_in_project`] for the monitor's frames. A completed frame changes
+/// nothing but the monitor's picture unless it raised a toast or the launch
+/// screen is up, so only the picture is published; the transport's own tick
+/// and the edit/scrub handlers publish the lanes when they move. A frame that
+/// raised a toast does a full publish so a failure says so at once.
 pub fn spawn_frame<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     then: impl FnOnce(&mut Studio, &App, &Models, T) + Send + 'static,
 ) {
     use std::sync::atomic::{AtomicBool, Ordering};
     let epoch = project_epoch();
-    spawn_detached(move || {
+    spawn_on_frame_worker(move || {
         let toasted = Arc::new(AtomicBool::new(false));
         let noted = Arc::clone(&toasted);
         deliver_then(
@@ -250,7 +295,7 @@ pub fn spawn_frame<T: Send + 'static>(
                 noted.store(studio.toast.token != toast, Ordering::Relaxed);
             },
             move |studio, app, models| {
-                if studio.playing && !toasted.load(Ordering::Relaxed) {
+                if !toasted.load(Ordering::Relaxed) && !studio.on_start {
                     studio.publish_frame(app);
                 } else {
                     studio.publish(app, models);

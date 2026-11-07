@@ -260,6 +260,12 @@ impl MonitorPane {
         self.asked = Some(std::time::Instant::now());
         spawn_frame(
             move || {
+                // When paused or scrubbing, cancel any stale playback
+                // prefetch before decoding so background workers do not hold
+                // the reader's lock across the scrub target.
+                if !spec.moving {
+                    monitor.prefetch(Arc::clone(&clips), &settings, spec, 0);
+                }
                 // On the window's device the frame stays a texture; without
                 // one it comes back as pixels and is uploaded here.
                 let frame = if monitor.has_gpu() {
@@ -271,22 +277,18 @@ impl MonitorPane {
                         .frame(Arc::clone(&clips), &settings, spec)
                         .map(|bytes| Picture::Pixels(bytes, width, height))
                 };
-                // Decode-ahead for whatever comes next, on a worker of its
-                // own, so the frame goes to the window without waiting for
-                // it and the next frame can start meanwhile. Playing, the
-                // full window ahead: the scheduler adds only the frames it
-                // has not queued yet, so asking for all of them each frame
-                // costs nothing and keeps a slow decode from catching up
-                // with the playhead.
-                {
+                // Decode-ahead for whatever comes next while playing, on a
+                // worker of its own, so the frame goes to the window without
+                // waiting for it and the next frame can start meanwhile. The
+                // scheduler adds only the frames it has not queued yet, so
+                // asking for all of them each frame costs nothing and keeps a
+                // slow decode from catching up with the playhead.
+                if spec.moving {
                     let monitor = monitor.clone();
                     let settings = settings.clone();
-                    let ahead = if spec.moving {
-                        concat_media::prefetch::AHEAD
-                    } else {
-                        2
-                    };
-                    spawn_detached(move || monitor.prefetch(clips, &settings, spec, ahead));
+                    spawn_detached(move || {
+                        monitor.prefetch(clips, &settings, spec, concat_media::prefetch::AHEAD);
+                    });
                 }
                 frame
             },

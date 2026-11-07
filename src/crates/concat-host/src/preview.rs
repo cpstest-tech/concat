@@ -309,13 +309,14 @@ impl Monitor {
         spec: FrameSpec,
         frames: u32,
     ) {
-        let plan = self.plan_for(clips, settings, spec);
-        let moments = concat_export::preview_moments(
-            &plan,
-            spec.time,
-            frames.min(concat_media::prefetch::AHEAD),
-            spec.proxy,
-        );
+        let count = frames.min(concat_media::prefetch::AHEAD);
+        let plan = (count > 0 || spec.moving).then(|| self.plan_for(clips, settings, spec));
+        let moments = match &plan {
+            Some(plan) if count > 0 => {
+                concat_export::preview_moments(plan, spec.time, count, spec.proxy)
+            }
+            _ => Vec::new(),
+        };
         let fps = (settings.rate_num as f64 / settings.rate_den.max(1) as f64).max(1.0);
         // The file a cut leads into, read a second early: opening a reader
         // and seeking it costs more than the quarter second the frames
@@ -331,8 +332,8 @@ impl Monitor {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if !spec.moving {
             early.clear();
-        } else {
-            let far = concat_export::preview_moments(&plan, spec.time + NEXT_CUT, 1, spec.proxy)
+        } else if let Some(plan) = &plan {
+            let far = concat_export::preview_moments(plan, spec.time + NEXT_CUT, 1, spec.proxy)
                 .pop()
                 .map(|far| far.frames)
                 .unwrap_or_default();

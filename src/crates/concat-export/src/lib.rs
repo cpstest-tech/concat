@@ -2195,38 +2195,46 @@ impl PreviewSources {
         headless(|gpu| self.composite(gpu).into_pixels())
     }
 
-    /// The frame drawn whole on the GPU and kept there, when what stops
-    /// [`PreviewSources::plan`] drawing it alone is a packaged transition
-    /// and nothing else: no live treatment, no layer above the incoming
-    /// lane. `None` otherwise, or when the shader cannot run; the caller
-    /// then takes [`PreviewSources::composite`]. The same pictures and the
-    /// same shader as that path, without its three round trips through
-    /// memory a frame.
+    /// The frame drawn whole on the GPU and kept there, when a packaged
+    /// transition covers this instant: the outgoing and incoming stages,
+    /// any treatments below or above the transition lane, and any layers
+    /// above the incoming lane are all composited in GPU textures without
+    /// reading pixels back to CPU memory. `None` when no transition covers
+    /// the instant or when the shader cannot run; the caller then takes
+    /// [`PreviewSources::composite`].
     pub fn transition_texture(
         &self,
         gpu: &mut concat_render::WgpuCompositor,
     ) -> Option<concat_render::wgpu::Texture> {
         let time = self.plan.time;
-        if self
+        let span = self.transitions.iter().find(|span| span.covers(time))?;
+        let pass =
+            Catalogue::builtin().transition_pass(&span.id, &span.params, span.progress(time))?;
+        let (mut from, mut to) = transition_stages(&self.plan, span);
+        let (below, over_treatments): (Vec<_>, Vec<_>) = self
+            .plan
             .treatments
             .iter()
-            .any(|treatment| treatment.covers(time))
-        {
-            return None;
-        }
-        let span = self.transitions.iter().find(|span| span.covers(time))?;
-        if self
+            .cloned()
+            .partition(|treatment| treatment.track < span.to_track);
+        from.treatments = below.clone();
+        to.treatments = below;
+        let above: Vec<_> = self
             .plan
             .layers
             .iter()
-            .any(|layer| layer.track > span.to_track)
-        {
-            return None;
-        }
-        let pass =
-            Catalogue::builtin().transition_pass(&span.id, &span.params, span.progress(time))?;
-        let (from, to) = transition_stages(&self.plan, span);
-        gpu.render_transition_texture(&from, &to, &pass)
+            .filter(|layer| layer.track > span.to_track)
+            .cloned()
+            .collect();
+        let over = FramePlan {
+            width: self.plan.width,
+            height: self.plan.height,
+            time: self.plan.time,
+            output: self.plan.output,
+            layers: above,
+            treatments: over_treatments,
+        };
+        gpu.render_transition_stack_texture(&from, &to, &pass, &over)
     }
 }
 
@@ -2293,9 +2301,7 @@ pub fn preview_sources_of(
     let time = quantise(seconds, rate);
     let plan_at = plan_frame(timeline, time);
 
-    let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan_at.layers.len());
-    let mut failures: Vec<String> = Vec::new();
-    for layer in &plan_at.layers {
+    let decode_layer = |layer: &PlannedLayer| -> Result<PlannedLayer, String> {
         let (decode_width, decode_height) = decode_sizes
             .get(&layer.clip)
             .copied()
@@ -2321,7 +2327,7 @@ pub fn preview_sources_of(
                     Some(drawn) => std::sync::Arc::new(drawn),
                     None => frame,
                 };
-                layers.push(filled(
+                Ok(filled(
                     layer,
                     frame,
                     tracks.get(&layer.clip).copied().unwrap_or(0),
@@ -2331,7 +2337,40 @@ pub fn preview_sources_of(
                     stabilized.get(&layer.clip),
                 ))
             }
-            Err(error) => failures.push(format!("{}: {error}", layer.media.display())),
+            Err(error) => Err(format!("{}: {error}", layer.media.display())),
+        }
+    };
+    let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan_at.layers.len());
+    let mut failures: Vec<String> = Vec::new();
+    if plan_at.layers.len() <= 1 {
+        for layer in &plan_at.layers {
+            match decode_layer(layer) {
+                Ok(filled) => layers.push(filled),
+                Err(error) => failures.push(error),
+            }
+        }
+    } else {
+        let decode_layer = &decode_layer;
+        let results: Vec<Result<PlannedLayer, String>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = plan_at
+                .layers
+                .iter()
+                .map(|layer| scope.spawn(move || decode_layer(layer)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("layer decode worker panicked".to_owned()))
+                })
+                .collect()
+        });
+        for result in results {
+            match result {
+                Ok(filled) => layers.push(filled),
+                Err(error) => failures.push(error),
+            }
         }
     }
 

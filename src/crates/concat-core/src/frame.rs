@@ -119,6 +119,22 @@ impl Frame {
         self.id
     }
 
+    /// A copy that keeps this frame's [`Frame::id`]: for when a decoder
+    /// emits the same unchanged picture at consecutive output ticks, so a
+    /// renderer holding the uploaded texture does not upload it again. Any
+    /// later write through [`Frame::pixels_mut`], [`Frame::set_pixel`],
+    /// [`Frame::blit`], or [`Frame::fill`] still mints a fresh identity.
+    pub fn share(&self) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            pixels: self.pixels.clone(),
+            id: self.id,
+            depth: self.depth,
+            signal: self.signal,
+        }
+    }
+
     /// How many bytes a frame of this size occupies.
     pub const fn byte_len(width: u32, height: u32) -> usize {
         width as usize * height as usize * BYTES_PER_PIXEL

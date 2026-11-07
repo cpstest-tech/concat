@@ -804,6 +804,24 @@ pub fn sync<T: Clone + PartialEq + 'static>(model: &VecModel<T>, next: Vec<T>) {
     }
 }
 
+/// [`sync`] for `KeyRowData`, whose nested `keys: ModelRc<KeyMarkData>`
+/// compares by model pointer identity: keeping the existing `ModelRc` when
+/// its marks are equal lets [`sync`] skip unchanged rows instead of
+/// resetting the whole model on every publish.
+fn sync_key_editor_rows(model: &VecModel<KeyRowData>, mut next: Vec<KeyRowData>) {
+    for (index, row) in next.iter_mut().enumerate() {
+        if let Some(existing) = model.row_data(index) {
+            let same_marks = existing.keys.row_count() == row.keys.row_count()
+                && (0..existing.keys.row_count())
+                    .all(|mark| existing.keys.row_data(mark) == row.keys.row_data(mark));
+            if same_marks {
+                row.keys = existing.keys;
+            }
+        }
+    }
+    sync(model, next);
+}
+
 /// The window's state. See the module docs for what is whose.
 pub struct Studio {
     pub host: Host,
@@ -3135,7 +3153,7 @@ impl Studio {
             std::time::Duration::from_millis(8),
             move || {
                 crate::host::Shell::with(|shell, app| {
-                    {
+                    let paged = {
                         let mut studio = shell.studio.borrow_mut();
                         let end = studio.duration();
                         let position = studio.host.playback.position_now() as f32;
@@ -3145,6 +3163,7 @@ impl Studio {
                             return;
                         }
                         shown = Some(frame);
+                        let prev_scroll = studio.lanes.scroll_left;
                         studio.playhead = position.min(end);
                         // The view follows: a playhead that runs off the
                         // right edge, or sits off the left, pages the lanes
@@ -3170,8 +3189,13 @@ impl Studio {
                         } else {
                             studio.request_preview();
                         }
+                        (studio.lanes.scroll_left - prev_scroll).abs() > 1e-6 || !studio.playing
+                    };
+                    if paged {
+                        shell.studio.borrow().publish_lanes(&app, &shell.models);
+                    } else {
+                        shell.studio.borrow().publish_playhead(&app, &shell.models);
                     }
-                    shell.studio.borrow().publish_lanes(&app, &shell.models);
                 });
             },
         );
@@ -9461,6 +9485,78 @@ impl Studio {
             .set_preview_frame(self.monitor.image.clone());
     }
 
+    /// What a playhead move alone changes when neither the document nor the
+    /// timeline's scroll window moved: the playhead and monitor readouts, and
+    /// any playhead-dependent stage or keyframe state for the selection.
+    pub fn publish_playhead(&self, app: &App, models: &Models) {
+        let editor = app.global::<Editor>();
+        let timeline = self.timeline();
+        let playhead = f64::from(self.playhead);
+        let showing = timeline
+            .clips
+            .iter()
+            .filter(|clip| {
+                (clip.kind.is_visual()
+                    || matches!(clip.kind, model::ClipKind::Text | model::ClipKind::Shape))
+                    && clip.start <= playhead
+                    && playhead < clip.start + clip.duration
+            })
+            .max_by_key(|clip| -self.row_of(&clip.track_id));
+        if let Some(source) = self.source.as_ref() {
+            let has_picture = matches!(
+                source.kind,
+                model::MediaKind::Video | model::MediaKind::Image
+            ) && source.time < source.duration;
+            editor.set_has_picture(has_picture);
+            editor.set_preview_clip_name(source.name.as_str().into());
+            editor.set_preview_duration(source.duration as f32);
+        } else {
+            editor.set_has_picture(showing.is_some());
+            editor.set_preview_clip_name(
+                showing
+                    .map(|clip| clip.name.as_str())
+                    .unwrap_or_default()
+                    .into(),
+            );
+            editor.set_preview_duration(self.duration());
+        }
+        editor.set_playing(self.playing);
+        editor.set_playhead(self.playhead);
+        editor.set_scroll_left(self.lanes.scroll_left);
+        self.publish_frame(app);
+        if !self.selection.is_empty() {
+            sync(&models.stage, self.stage_items());
+            editor.set_selected_clip(self.selected());
+            sync_key_editor_rows(&models.key_editor_rows, self.key_editor_rows());
+            app.global::<KeyEditor>().set_at(
+                self.sole_selection()
+                    .and_then(|id| self.clip(&id))
+                    .map_or(0.0, |clip| place_in(clip, self.playhead) as f32),
+            );
+            self.publish_speed_ramp(app, models);
+            let rows = self.key_rows();
+            app.global::<Keyframes>().set_available(!rows.is_empty());
+            sync(&models.key_rows, rows);
+            if let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id))
+                && graded(clip.kind)
+            {
+                let inside = self.key_point().map(|(_, at)| at);
+                sync(&models.adjust_params, adjust_rows(&clip.video_effects, inside));
+                if let Some(package) = Catalogue::builtin().get(ADJUST_ID) {
+                    let (adjust_wheels, _) = grading_rows(
+                        package,
+                        clip.video_effects
+                            .iter()
+                            .find(|entry| entry.id == ADJUST_ID),
+                        -1,
+                        Some(inside),
+                    );
+                    sync(&models.adjust_wheels, adjust_wheels);
+                }
+            }
+        }
+    }
+
     /// The timeline and the readouts that follow it: what runs on every
     /// event of a scrub, a drag, a trim or a knob.
     pub fn publish_lanes(&self, app: &App, models: &Models) {
@@ -9642,9 +9738,9 @@ impl Studio {
         // The keyframe cluster's state, on its own global: every keyable row
         // in the inspector reads it, and none of them is threaded to.
         let keys = app.global::<Keyframes>();
-        // The Keyframes panel: set whole, since a row holds a model of its
-        // keys and cannot be compared for a diff.
-        models.key_editor_rows.set_vec(self.key_editor_rows());
+        // The Keyframes panel: synced keeping each row's mark model when
+        // its marks have not changed, so unchanged rows do not reset.
+        sync_key_editor_rows(&models.key_editor_rows, self.key_editor_rows());
         app.global::<KeyEditor>().set_at(
             self.sole_selection()
                 .and_then(|id| self.clip(&id))
@@ -11746,12 +11842,12 @@ impl Studio {
         let stamp = (
             self.revision,
             self.on_start,
-            self.art_pending.len() + self.posters_pending.len(),
+            self.art_pending.len() + self.posters_pending.len() + self.window_pending.len(),
             // Proxies switched on in Settings are seen to at once.
             self.prefs.proxies,
         );
         if self.art_stamp == Some(stamp) {
-            if !self.on_start {
+            if !self.on_start && self.echo.is_some() {
                 self.request_window_art();
             }
             return;

@@ -55,10 +55,11 @@
 //! follow-up to this module, and needs the frame to stay a hardware frame
 //! all the way to the render.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Mutex, Once};
+use std::sync::{LazyLock, Mutex, Once};
 use std::time::Duration;
 
 use ffmpeg_the_third as ffmpeg;
@@ -74,6 +75,10 @@ pub enum HwDevice {
     VideoToolbox,
     /// Direct3D 11 video acceleration, on Windows.
     D3d11va,
+    /// NVIDIA's NVDEC via CUDA, on Linux and Windows.
+    Cuda,
+    /// Cross-platform Vulkan Video decode.
+    Vulkan,
     /// Android's.
     MediaCodec,
     /// The Linux video acceleration API. Never the default; see the module
@@ -83,15 +88,18 @@ pub enum HwDevice {
 
 impl HwDevice {
     /// Every device, in the order a menu would list them.
-    pub const ALL: [HwDevice; 4] = [
+    pub const ALL: [HwDevice; 6] = [
         HwDevice::VideoToolbox,
         HwDevice::D3d11va,
+        HwDevice::Cuda,
+        HwDevice::Vulkan,
         HwDevice::MediaCodec,
         HwDevice::Vaapi,
     ];
 
     /// The device this binary's platform has, or `None` where there is no
-    /// device worth choosing unasked: Linux, whose VAAPI is opt-in only.
+    /// device worth choosing unasked. On Linux, NVDEC (CUDA) is preferred
+    /// when present, followed by Vulkan Video; VAAPI remains opt-in only.
     pub fn platform_default() -> Option<Self> {
         if cfg!(any(target_os = "macos", target_os = "ios")) {
             Some(HwDevice::VideoToolbox)
@@ -99,6 +107,8 @@ impl HwDevice {
             Some(HwDevice::D3d11va)
         } else if cfg!(target_os = "android") {
             Some(HwDevice::MediaCodec)
+        } else if cfg!(target_os = "linux") {
+            linux_default()
         } else {
             None
         }
@@ -109,6 +119,8 @@ impl HwDevice {
         match self {
             HwDevice::VideoToolbox => "VideoToolbox",
             HwDevice::D3d11va => "Direct3D 11",
+            HwDevice::Cuda => "NVDEC (CUDA)",
+            HwDevice::Vulkan => "Vulkan Video",
             HwDevice::MediaCodec => "MediaCodec",
             HwDevice::Vaapi => "VAAPI",
         }
@@ -119,6 +131,8 @@ impl HwDevice {
         match self {
             HwDevice::VideoToolbox => "videotoolbox",
             HwDevice::D3d11va => "d3d11va",
+            HwDevice::Cuda => "cuda",
+            HwDevice::Vulkan => "vulkan",
             HwDevice::MediaCodec => "mediacodec",
             HwDevice::Vaapi => "vaapi",
         }
@@ -146,10 +160,48 @@ impl HwDevice {
         match self {
             HwDevice::VideoToolbox => sys::AVHWDeviceType::VIDEOTOOLBOX,
             HwDevice::D3d11va => sys::AVHWDeviceType::D3D11VA,
+            HwDevice::Cuda => sys::AVHWDeviceType::CUDA,
+            HwDevice::Vulkan => sys::AVHWDeviceType::VULKAN,
             HwDevice::MediaCodec => sys::AVHWDeviceType::MEDIACODEC,
             HwDevice::Vaapi => sys::AVHWDeviceType::VAAPI,
         }
     }
+}
+
+/// Probes the safe Linux hardware decode backends once per process: NVDEC
+/// (`Cuda`) first on NVIDIA GPUs, then `Vulkan`. VAAPI is never picked
+/// unasked (issue #70).
+fn linux_default() -> Option<HwDevice> {
+    static LINUX_DEVICE: LazyLock<Option<HwDevice>> = LazyLock::new(|| {
+        for candidate in [HwDevice::Cuda, HwDevice::Vulkan] {
+            if candidate.linked() && device(candidate).is_some() {
+                return Some(candidate);
+            }
+        }
+        None
+    });
+    *LINUX_DEVICE
+}
+
+/// Media files whose hardware decode failed at least once: subsequent readers
+/// on the same file open directly in software without retrying hardware setup.
+static FAILED_PATHS: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
+
+/// Whether hardware decode has already failed for `path`.
+pub(crate) fn has_failed(path: &Path) -> bool {
+    FAILED_PATHS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(path)
+}
+
+/// Records that hardware decode failed on `path`, so future readers open it
+/// straight in software.
+pub(crate) fn mark_failed(path: &Path) {
+    FAILED_PATHS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(path.to_path_buf());
 }
 
 /// How a reader chooses between the hardware and the CPU.
@@ -208,6 +260,9 @@ impl HwPolicy {
 pub fn hardware_wins(device: HwDevice, codec: ffmpeg::codec::Id, format: Pixel) -> bool {
     if device == HwDevice::MediaCodec {
         return mediacodec_decoder(codec, format).is_some();
+    }
+    if matches!(device, HwDevice::Cuda | HwDevice::Vulkan) {
+        return true;
     }
     // SAFETY: a descriptor points into libavutil's static table, and every
     // pixel format has at least one component.
@@ -537,6 +592,7 @@ impl Device {
             if (*raw).hw_device_ctx.is_null() {
                 return None;
             }
+            (*raw).extra_hw_frames = 2;
             (*raw).get_format = Some(pick_format);
         }
         Some(format)
@@ -655,19 +711,26 @@ unsafe extern "C" fn pick_format(
 
 /// Copies a frame out of the device's memory into a fresh software frame,
 /// in whatever format the device hands back (NV12, for the most part), with
-/// its timestamp and colour tags intact.
+/// its timestamp and colour tags intact. VideoToolbox maps its IOSurface
+/// directly in unified memory when possible before falling back to a copy.
 pub(crate) fn download(frame: &Video) -> Result<Video, ffmpeg::Error> {
     let mut copy = Video::empty();
     // SAFETY: both frames are live; the destination is empty, so the
     // transfer allocates it in the device's first software format.
     unsafe {
-        let ret = sys::av_hwframe_transfer_data(copy.as_mut_ptr(), frame.as_ptr(), 0);
-        if ret < 0 {
-            return Err(ffmpeg::Error::from(ret));
-        }
-        let ret = sys::av_frame_copy_props(copy.as_mut_ptr(), frame.as_ptr());
-        if ret < 0 {
-            return Err(ffmpeg::Error::from(ret));
+        const AV_HWFRAME_MAP_READ: libc::c_int = 1;
+        let src = frame.as_ptr();
+        let dst = copy.as_mut_ptr();
+        let mappable = (*src).format == sys::AVPixelFormat::VIDEOTOOLBOX as libc::c_int;
+        if !mappable || sys::av_hwframe_map(dst, src, AV_HWFRAME_MAP_READ) < 0 {
+            let ret = sys::av_hwframe_transfer_data(dst, src, 0);
+            if ret < 0 {
+                return Err(ffmpeg::Error::from(ret));
+            }
+            let ret = sys::av_frame_copy_props(dst, src);
+            if ret < 0 {
+                return Err(ffmpeg::Error::from(ret));
+            }
         }
     }
     Ok(copy)

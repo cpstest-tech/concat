@@ -237,12 +237,12 @@ impl Prefetcher {
         Self::new(pool, Self::default_workers())
     }
 
-    /// How many decoders run at once: a quarter of the machine's threads,
-    /// two at least and four at most. A decoder is single-threaded on the
+    /// How many decoders run at once: a third of the machine's threads,
+    /// two at least and six at most. A decoder is single-threaded on the
     /// walk from a keyframe, so this is roughly the share of the machine
     /// decoding may take while the window and the mix keep the rest.
     pub fn default_workers() -> usize {
-        std::thread::available_parallelism().map_or(2, |threads| (threads.get() / 4).clamp(2, 4))
+        std::thread::available_parallelism().map_or(2, |threads| (threads.get() / 3).clamp(2, 6))
     }
 
     /// The pool the frames land in.
@@ -315,6 +315,7 @@ impl Prefetcher {
                     let frames: Vec<Arc<Frame>> = moment
                         .frames
                         .iter()
+                        .take_while(|_| current())
                         .filter_map(|request| shared.pool.frame(request).ok())
                         .collect();
                     if current() {

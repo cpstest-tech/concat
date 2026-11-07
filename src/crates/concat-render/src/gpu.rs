@@ -533,6 +533,47 @@ struct CompiledShader {
     stages: Vec<wgpu::RenderPipeline>,
 }
 
+impl CompiledShader {
+    /// Shares the compiled pipelines with a sibling compositor while giving
+    /// it uniform buffers and a bind group of its own, so two threads never
+    /// write into the same uniform buffers at once.
+    fn fork(&self, device: &wgpu::Device, uniform_layout: &wgpu::BindGroupLayout) -> Self {
+        let frame = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("concat pass frame"),
+            size: self.frame.size(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("concat pass params"),
+            size: self.params.size(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("concat pass uniforms"),
+            layout: uniform_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: params.as_entire_binding(),
+                },
+            ],
+        });
+        Self {
+            pipeline: self.pipeline.clone(),
+            frame,
+            params,
+            bind_group,
+            stages: self.stages.clone(),
+        }
+    }
+}
+
 /// A 2D float texture a pass samples, at `binding` of its group.
 fn picture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -953,14 +994,87 @@ impl WgpuCompositor {
         self.device.adapter_info().device_type == wgpu::DeviceType::Cpu
     }
 
-    /// A second compositor on this one's device, with pipelines, pools and
-    /// caches of its own: work on another thread - the effect cards -
-    /// shares the GPU's time with this one and nothing else, so it never
-    /// waits on this one's lock or evicts what this one keeps.
+    /// A second compositor on this one's device, with pools, uniform buffers
+    /// and caches of its own while sharing the compiled pipelines and
+    /// layouts: work on another thread - the effect cards or an export -
+    /// shares the GPU's time with this one without recompiling WGSL shaders,
+    /// waiting on this one's lock, or evicting what this one keeps.
     pub fn sibling(&self) -> Self {
-        let mut sibling = Self::drawing_in(self.device.clone(), self.queue.clone(), self.work);
-        sibling.uncaught = std::sync::Arc::clone(&self.uncaught);
-        sibling
+        let vertices = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("concat quads"),
+            size: (std::mem::size_of::<Vertex>() * 6 * 8) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shaders = self
+            .shaders
+            .iter()
+            .map(|(key, compiled)| {
+                (
+                    key.clone(),
+                    compiled.fork(&self.device, &self.uniform_layout),
+                )
+            })
+            .collect();
+        let transitions = self
+            .transitions
+            .iter()
+            .map(|(key, compiled)| {
+                (
+                    key.clone(),
+                    compiled.fork(&self.device, &self.uniform_layout),
+                )
+            })
+            .collect();
+        Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            pipelines: self.pipelines.clone(),
+            ground_pipelines: self.ground_pipelines.clone(),
+            upload_pipeline: self.upload_pipeline.clone(),
+            resolve_pipeline: self.resolve_pipeline.clone(),
+            tone_mapped_pipeline: self.tone_mapped_pipeline.clone(),
+            output: concat_core::frame::Signal::Sdr,
+            hdr_pipelines: self.hdr_pipelines.clone(),
+            deliver_hdr: false,
+            deep_target: None,
+            staging: HashMap::new(),
+            deep_pipelines: self.deep_pipelines.clone(),
+            deep_layout: self.deep_layout.clone(),
+            deep_staging: HashMap::new(),
+            bind_layout: self.bind_layout.clone(),
+            uniform_layout: self.uniform_layout.clone(),
+            lut_layout: self.lut_layout.clone(),
+            reveal_layout: self.reveal_layout.clone(),
+            transition_layout: self.transition_layout.clone(),
+            pictures_layouts: self.pictures_layouts.clone(),
+            blank: self.blank.clone(),
+            luts: HashMap::new(),
+            luts_drawn: HashMap::new(),
+            reveals: HashMap::new(),
+            reveals_drawn: HashMap::new(),
+            shaders,
+            transitions,
+            refused: self.refused.clone(),
+            sampler: self.sampler.clone(),
+            vertices,
+            vertex_capacity: 6 * 8,
+            pool: HashMap::new(),
+            pool_bytes: 0,
+            pool_budget: self.pool_budget,
+            pool_textures: 0,
+            composites: 0,
+            uploads: 0,
+            used: HashMap::new(),
+            idle: HashMap::new(),
+            target: None,
+            presentable: None,
+            stages: None,
+            white: std::sync::Arc::clone(&self.white),
+            dead: self.dead,
+            work: self.work,
+            uncaught: std::sync::Arc::clone(&self.uncaught),
+        }
     }
 
     /// The widest or tallest frame this compositor can draw: the document's
@@ -1495,11 +1609,21 @@ impl WgpuCompositor {
         self.output = plan.output;
         self.used.values_mut().for_each(|used| *used = 0);
         self.composites += 1;
+        self.prepare_with_ground(plan, None)
+    }
+
+    /// [`WgpuCompositor::prepare`] starting from an optional pooled `ground`
+    /// texture already drawn during this composite, without resetting the
+    /// per-composite pool claims.
+    fn prepare_with_ground(
+        &mut self,
+        plan: &FramePlan,
+        mut ground: Option<usize>,
+    ) -> (Vec<Draw>, Vec<Vertex>) {
         let (width, height) = (plan.width, plan.height);
         let seconds = plan.seconds();
         let mut treatments: Vec<&PlannedTreatment> = plan.treatments.iter().collect();
         treatments.sort_by_key(|treatment| treatment.track);
-        let mut ground: Option<usize> = None;
         let mut next = 0;
         for treatment in treatments {
             let mut draws = Vec::new();
@@ -2973,6 +3097,63 @@ impl WgpuCompositor {
             pass,
             &canvas_view,
         )?;
+        self.resolve(&mut encoder, (width, height), canvas, &out_view);
+        self.queue.submit([encoder.finish()]);
+        self.retire();
+        Some(out)
+    }
+
+    /// [`WgpuCompositor::render_transition_texture`] when layers or
+    /// treatments sit above the incoming transition lane: `from` and `to`
+    /// are drawn into their stage textures, combined through `pass` into a
+    /// pooled ground texture, and `over` (higher layers and treatments at or
+    /// above the transition lane) is composited over that ground on the GPU
+    /// without a single readback to CPU memory.
+    pub fn render_transition_stack_texture(
+        &mut self,
+        from: &FramePlan,
+        to: &FramePlan,
+        pass: &TransitionPass,
+        over: &FramePlan,
+    ) -> Option<wgpu::Texture> {
+        if over.layers.is_empty() && over.treatments.is_empty() {
+            return self.render_transition_texture(from, to, pass);
+        }
+        if self.dead {
+            return None;
+        }
+        let (width, height, time) = (from.width, from.height, from.seconds());
+        let [from_texture, to_texture] = self.stages(width, height);
+        for (plan, texture) in [(from, &from_texture), (to, &to_texture)] {
+            let (draws, vertices) = self.prepare(plan);
+            self.write_vertices(&vertices);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let encoder = self.encode(&view, texture, &draws, wgpu::Color::BLACK);
+            self.queue.submit([encoder.finish()]);
+        }
+        self.output = over.output;
+        self.used.values_mut().for_each(|used| *used = 0);
+        self.composites += 1;
+        let ground = self.claim(width, height);
+        let ground_view = self.pool[&(width, height)][ground].view.clone();
+        let from_view = from_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let to_view = to_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let encoder = self.encode_transition(
+            width,
+            height,
+            time,
+            &from_view,
+            &to_view,
+            pass,
+            &ground_view,
+        )?;
+        self.queue.submit([encoder.finish()]);
+        let (draws, vertices) = self.prepare_with_ground(over, Some(ground));
+        self.write_vertices(&vertices);
+        let (canvas, canvas_texture, canvas_view) = self.canvas(width, height);
+        let out = self.presentable(width, height);
+        let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self.encode(&canvas_view, &canvas_texture, &draws, wgpu::Color::BLACK);
         self.resolve(&mut encoder, (width, height), canvas, &out_view);
         self.queue.submit([encoder.finish()]);
         self.retire();

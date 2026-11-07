@@ -1059,13 +1059,24 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         state.handle(Msg::Timeline(TimelineMsg::PreviewAxisAudioChanged(on)));
     }));
     // The preview axis: on every move of the pointer across the lanes, so
-    // it publishes the lanes and no more, the way a scrub does.
-    editor.on_hovered(on_lanes!(|state, seconds: f32| {
-        state.handle(Msg::Timeline(TimelineMsg::Hovered(seconds)));
-    }));
-    editor.on_hover_ended(on_lanes!(|state| {
-        state.handle(Msg::Timeline(TimelineMsg::HoverEnded));
-    }));
+    // it asks the monitor for the hovered frame without republishing the
+    // timeline models on every pixel.
+    editor.on_hovered(|seconds: f32| {
+        Shell::with(|shell, _| {
+            shell
+                .studio
+                .borrow_mut()
+                .handle(Msg::Timeline(TimelineMsg::Hovered(seconds)));
+        });
+    });
+    editor.on_hover_ended(|| {
+        Shell::with(|shell, _| {
+            shell
+                .studio
+                .borrow_mut()
+                .handle(Msg::Timeline(TimelineMsg::HoverEnded));
+        });
+    });
     editor.on_add_track(on_window!(|state, bottom: bool| {
         state.apply(concat_project::Command::AddTrack { bottom });
     }));
@@ -1092,9 +1103,21 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_key_mark_moved(on_lanes!(|state, from: f32, to: f32| {
         state.move_keys_at(from, to);
     }));
-    editor.on_scrubbed(on_lanes!(|state, seconds: f32| {
-        state.scrub(seconds);
-    }));
+    editor.on_scrubbed(|seconds: f32| {
+        Shell::with(|shell, app| {
+            let centred = {
+                let mut state = shell.studio.borrow_mut();
+                state.scrub(seconds);
+                state.lanes.centred
+            };
+            let state = shell.studio.borrow();
+            if centred {
+                state.publish_lanes(&app, &shell.models);
+            } else {
+                state.publish_playhead(&app, &shell.models);
+            }
+        });
+    });
     editor.on_finger_held(on_lanes!(|state| {
         state.finger_held();
     }));

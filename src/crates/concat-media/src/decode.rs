@@ -573,10 +573,14 @@ fn video_filter(
     parts.join(",")
 }
 
-/// One decoded picture, before the filtergraph.
+/// One decoded picture, before the filtergraph, plus its converted output
+/// once built when the graph is stateless so a paced or repeating decoder
+/// emitting the same source picture across ticks neither re-runs the
+/// filtergraph nor mints a new GPU upload identity.
 struct Source {
     frame: Video,
     pts: Option<Rational>,
+    converted: Option<Frame>,
 }
 
 /// Decodes a file through libavcodec and libavfilter.
@@ -674,7 +678,13 @@ impl Decoder {
             )
         };
         let software = || Self::open_codec(path, &stream, options, Codec::Software);
-        let (decoder, accelerated) = match options.hardware.device_for(codec, format) {
+        let chosen_device = if options.hardware == HwPolicy::Preference && hardware::has_failed(path)
+        {
+            None
+        } else {
+            options.hardware.device_for(codec, format)
+        };
+        let (decoder, accelerated) = match chosen_device {
             // MediaCodec: its own decoder, by name, when a seat is free.
             // Not for a keyframes-only reader: the wrapper ignores
             // `skip_frame`, so a filmstrip tile would decode its whole
@@ -723,6 +733,7 @@ impl Decoder {
                     match Self::open_codec(path, &stream, options, Codec::On(&device)) {
                         Ok(opened) => opened,
                         Err(error) => {
+                            hardware::mark_failed(path);
                             hardware::note_fallback(
                                 device.kind(),
                                 "open the decoder",
@@ -951,17 +962,58 @@ impl Decoder {
         Ok(())
     }
 
+    /// Skips frames whose presentation timestamp is strictly before `time`:
+    /// during a roll-forward across many frames, non-reference B-frames
+    /// before `time` are skipped in the codec (`AVDISCARD_NONREF`), hardware
+    /// surfaces before `time` are not copied back from the GPU, and
+    /// `convert` is not run until `time` is reached.
+    pub(crate) fn discard_before(&mut self, time: Rational) {
+        if !self.options.keyframes_only {
+            self.discard_before = Some(self.discard_before.map_or(time, |held| held.max(time)));
+        }
+    }
+
     /// The next picture out of the codec, or `None` at the end of the file.
     /// Frames before the discard point never come out of here, and a frame
-    /// from a hwaccel device is copied back to memory before it does.
+    /// from a hwaccel device is copied back to memory only once it has
+    /// survived the discard check.
     fn next_source(&mut self) -> Result<Option<Source>> {
         loop {
             // Packets for other streams are skipped; the end of the file
             // drains the codec so its last few frames come out at all; a
             // packet the codec refuses while full is kept and sent again.
             self.fed = true;
+            let skip_until = match (self.discard_before, self.discard_through) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            };
+            let keyframes_only = self.options.keyframes_only;
+            let wrapped_hw = matches!(self.hardware, Some(OnChip::Wrapped { .. }));
+            let time_base = self.time_base;
+            let start = self.start;
+            let discard = |packet: &ffmpeg::Packet| {
+                if keyframes_only {
+                    return ffmpeg::Discard::NonKey;
+                }
+                if wrapped_hw {
+                    return ffmpeg::Discard::Default;
+                }
+                let Some(limit) = skip_until else {
+                    return ffmpeg::Discard::Default;
+                };
+                let pkt_pts = packet
+                    .pts()
+                    .and_then(|ticks| ffi::seconds(ticks, time_base))
+                    .map(|pts| pts - start);
+                if pkt_pts.is_some_and(|pts| pts < limit) {
+                    ffmpeg::Discard::NonReference
+                } else {
+                    ffmpeg::Discard::Default
+                }
+            };
             let read = || feed::read_packet(&mut self.input, self.stream);
-            let mut frame = match feed::next_frame(&mut self.decoder, &mut self.held, read) {
+            let mut frame = match feed::next_video_frame(&mut self.decoder, &mut self.held, discard, read) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => return Ok(None),
                 Err(feed::Stall::Read(error)) => return Err(ffi::fail("read", &self.path, error)),
@@ -970,6 +1022,7 @@ impl Decoder {
                     // Software takes over after the last frame the reader
                     // was given.
                     let device = self.hardware.take().expect("checked").device();
+                    hardware::mark_failed(&self.path);
                     let (stage, detail) = match &stall {
                         feed::Stall::Send(error) => ("take a packet", error.to_string()),
                         feed::Stall::Receive(error) => ("decode a frame", error.to_string()),
@@ -985,31 +1038,19 @@ impl Decoder {
                 .timestamp()
                 .and_then(|ticks| ffi::seconds(ticks, self.time_base))
                 .map(|pts| pts - self.start);
-            if let Some(&OnChip::Accel(device, format)) = self.hardware.as_ref() {
-                if frame.format() == format {
-                    frame = match hardware::download(&frame) {
-                        Ok(copy) => copy,
-                        Err(error) => {
-                            hardware::note_fallback(
-                                device,
-                                "copy a frame back",
-                                &error.to_string(),
-                            );
-                            self.resume_in_software(pts, false)?;
-                            continue;
-                        }
-                    };
-                } else {
-                    // The codec set the device up for this stream and the
-                    // device said no, so the codec went on in software by
-                    // itself; the frames are fine.
-                    hardware::note_fallback(
-                        device,
-                        "take this stream",
-                        "the codec decoded it in software",
-                    );
-                    self.hardware = None;
-                }
+            if let Some(&OnChip::Accel(device, format)) = self.hardware.as_ref()
+                && frame.format() != format
+            {
+                // The codec set the device up for this stream and the
+                // device said no, so the codec went on in software by
+                // itself; the frames are fine.
+                hardware::mark_failed(&self.path);
+                hardware::note_fallback(
+                    device,
+                    "take this stream",
+                    "the codec decoded it in software",
+                );
+                self.hardware = None;
             }
             if let (Some(before), Some(pts)) = (self.discard_before, pts)
                 && pts < before
@@ -1021,10 +1062,34 @@ impl Decoder {
             {
                 continue;
             }
+            if let Some(&OnChip::Accel(device, format)) = self.hardware.as_ref()
+                && frame.format() == format
+            {
+                frame = match hardware::download(&frame) {
+                    Ok(copy) => copy,
+                    Err(error) => {
+                        hardware::mark_failed(&self.path);
+                        hardware::note_fallback(
+                            device,
+                            "copy a frame back",
+                            &error.to_string(),
+                        );
+                        self.resume_in_software(pts, false)?;
+                        continue;
+                    }
+                };
+            }
+            if !self.options.keyframes_only {
+                self.decoder.skip_frame(ffmpeg::Discard::Default);
+            }
             self.discard_before = None;
             self.discard_through = None;
             self.last_pts = pts;
-            return Ok(Some(Source { frame, pts }));
+            return Ok(Some(Source {
+                frame,
+                pts,
+                converted: None,
+            }));
         }
     }
 
@@ -1066,10 +1131,15 @@ impl Decoder {
         let row = width as usize * if deep.is_some() { 8 } else { 4 };
         let stride = filtered.stride(0);
         let data = filtered.data(0);
-        let mut pixels = Vec::with_capacity(row * height as usize);
-        for y in 0..height as usize {
-            pixels.extend_from_slice(&data[y * stride..y * stride + row]);
-        }
+        let pixels = if stride == row {
+            data[..row * height as usize].to_vec()
+        } else {
+            let mut pixels = Vec::with_capacity(row * height as usize);
+            for y in 0..height as usize {
+                pixels.extend_from_slice(&data[y * stride..y * stride + row]);
+            }
+            pixels
+        };
         let frame = match deep {
             Some(signal) => Frame::from_rgba64(width, height, pixels, signal),
             None => Frame::from_rgba(width, height, pixels),
@@ -1126,13 +1196,26 @@ impl Decoder {
 
     /// Without pacing: every source frame, in order.
     fn next_unpaced(&mut self) -> Result<Option<Frame>> {
-        let Some(source) = self.next_source()? else {
+        let stateless_graph =
+            self.options.pre_chain.is_none() && self.options.filter_chain.is_none();
+        let Some(mut source) = self.next_source()? else {
             if self.options.looping
-                && let Some(last) = self.current.as_ref()
+                && let Some(last) = self.current.as_mut()
             {
                 self.position = last.pts;
+                if stateless_graph
+                    && let Some(converted) = last.converted.as_ref()
+                {
+                    return Ok(Some(converted.share()));
+                }
                 let frame = share(&last.frame);
-                return Ok(Some(self.convert(&frame)?));
+                let converted = self.convert(&frame)?;
+                if stateless_graph
+                    && let Some(last) = self.current.as_mut()
+                {
+                    last.converted = Some(converted.share());
+                }
+                return Ok(Some(converted));
             }
             return Ok(None);
         };
@@ -1142,7 +1225,11 @@ impl Decoder {
         // reference and keeps the original, as the paced path does.
         let frame = if self.options.looping {
             let reference = share(&source.frame);
-            self.convert(&reference)?
+            let converted = self.convert(&reference)?;
+            if stateless_graph {
+                source.converted = Some(converted.share());
+            }
+            converted
         } else {
             self.convert(&source.frame)?
         };
@@ -1191,8 +1278,21 @@ impl Decoder {
         }
         self.position = Some(target);
         self.tick += 1;
-        let frame = share(&current.frame);
-        Ok(Some(self.convert(&frame)?))
+        let stateless_graph =
+            self.options.pre_chain.is_none() && self.options.filter_chain.is_none();
+        if stateless_graph
+            && let Some(converted) = self.current.as_ref().and_then(|c| c.converted.as_ref())
+        {
+            return Ok(Some(converted.share()));
+        }
+        let frame = share(&self.current.as_ref().expect("checked").frame);
+        let converted = self.convert(&frame)?;
+        if stateless_graph
+            && let Some(current) = self.current.as_mut()
+        {
+            current.converted = Some(converted.share());
+        }
+        Ok(Some(converted))
     }
 }
 

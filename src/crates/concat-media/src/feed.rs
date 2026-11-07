@@ -106,6 +106,47 @@ pub(crate) fn next_frame<C: Codec, E>(
     }
 }
 
+/// [`next_frame`] for a video decoder, setting `skip_frame` per packet via
+/// `discard` before handing each packet to `codec`. This lets a seek or
+/// fast-forward skip non-reference B-frames up to its target timestamp
+/// (`AVDISCARD_NONREF`) and restore `AVDISCARD_DEFAULT` the instant the
+/// target's packet arrives.
+pub(crate) fn next_video_frame<E>(
+    codec: &mut decoder::Video,
+    held: &mut Held<ffmpeg::Packet>,
+    mut discard: impl FnMut(&ffmpeg::Packet) -> ffmpeg::Discard,
+    mut read: impl FnMut() -> Result<Input<ffmpeg::Packet>, E>,
+) -> Result<Option<Video>, Stall<E>> {
+    let mut refused = 0;
+    loop {
+        match codec.receive() {
+            Ok(frame) => return Ok(Some(frame)),
+            Err(ffmpeg::Error::Eof) => return Ok(None),
+            Err(error) if ffi::is_again(&error) => {}
+            Err(error) => return Err(Stall::Receive(error)),
+        }
+        let input = match held.take() {
+            Some(input) => input,
+            None => read().map_err(Stall::Read)?,
+        };
+        if let Input::Packet(ref packet) = input {
+            codec.skip_frame(discard(packet));
+        }
+        match codec.send(&input) {
+            Ok(()) => refused = 0,
+            Err(ffmpeg::Error::Eof) if matches!(input, Input::End) => {}
+            Err(error) if ffi::is_again(&error) => {
+                *held = Some(input);
+                refused += 1;
+                if refused >= STUCK_AFTER {
+                    return Err(Stall::Stuck);
+                }
+            }
+            Err(error) => return Err(Stall::Send(error)),
+        }
+    }
+}
+
 /// The error a stall is for a reader of `path`, named the way the loops
 /// this replaced named theirs.
 pub(crate) fn fail(stall: Stall<ffmpeg::Error>, path: &Path) -> Error {

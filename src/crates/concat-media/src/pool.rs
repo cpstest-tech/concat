@@ -215,6 +215,7 @@ pub struct FrameCache<K> {
     held: usize,
     tick: u64,
     frames: HashMap<K, (Arc<Frame>, u64)>,
+    order: std::collections::BTreeMap<u64, K>,
 }
 
 impl<K: Hash + Eq + Clone> FrameCache<K> {
@@ -225,16 +226,18 @@ impl<K: Hash + Eq + Clone> FrameCache<K> {
             held: 0,
             tick: 0,
             frames: HashMap::new(),
+            order: std::collections::BTreeMap::new(),
         }
     }
 
     fn get(&mut self, key: &K) -> Option<Arc<Frame>> {
         self.tick += 1;
         let tick = self.tick;
-        self.frames.get_mut(key).map(|(frame, touched)| {
-            *touched = tick;
-            Arc::clone(frame)
-        })
+        let (frame, touched) = self.frames.get_mut(key)?;
+        self.order.remove(touched);
+        *touched = tick;
+        self.order.insert(tick, key.clone());
+        Some(Arc::clone(frame))
     }
 
     fn insert(&mut self, key: K, frame: Arc<Frame>) {
@@ -245,17 +248,14 @@ impl<K: Hash + Eq + Clone> FrameCache<K> {
             return;
         }
         self.tick += 1;
-        if let Some((previous, _)) = self.frames.insert(key, (frame, self.tick)) {
+        if let Some((previous, old_tick)) = self.frames.insert(key.clone(), (frame, self.tick)) {
             self.held -= previous.pixels().len();
+            self.order.remove(&old_tick);
         }
+        self.order.insert(self.tick, key);
         self.held += bytes;
         while self.held > self.budget {
-            let Some(oldest) = self
-                .frames
-                .iter()
-                .min_by_key(|(_, (_, touched))| *touched)
-                .map(|(key, _)| key.clone())
-            else {
+            let Some((_, oldest)) = self.order.pop_first() else {
                 break;
             };
             if let Some((evicted, _)) = self.frames.remove(&oldest) {
@@ -273,8 +273,9 @@ impl<K: Hash + Eq + Clone> FrameCache<K> {
             .cloned()
             .collect();
         for key in gone {
-            if let Some((frame, _)) = self.frames.remove(&key) {
+            if let Some((frame, old_tick)) = self.frames.remove(&key) {
                 self.held -= frame.pixels().len();
+                self.order.remove(&old_tick);
             }
         }
     }
@@ -407,6 +408,10 @@ impl Reader {
         self.decoder.seek(rate.time_of_frame(index))?;
         self.next_index = i64::MIN;
         Ok(())
+    }
+
+    fn skip_before(&mut self, rate: FrameRate, index: i64) {
+        self.decoder.discard_before(rate.time_of_frame(index));
     }
 }
 
@@ -979,8 +984,14 @@ impl ReaderPool {
     ) -> Result<Option<Arc<Frame>>> {
         let rate = facts.rate;
         let next = (reader.next_index != i64::MIN).then_some(reader.next_index);
-        if !facts.still && plan_access(next, target) == Access::Seek {
-            reader.seek(rate, target)?;
+        if !facts.still {
+            match plan_access(next, target) {
+                Access::Seek => reader.seek(rate, target)?,
+                Access::Roll(ahead) if ahead > 4 => {
+                    reader.skip_before(rate, target - 1);
+                }
+                Access::Roll(_) => {}
+            }
         }
 
         // Roll forward to the target, caching everything passed on the way.
