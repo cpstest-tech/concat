@@ -130,6 +130,7 @@ component Clip inherits Rectangle {
     in property <TimelineTool> tool;
     /// how close to an edge counts as grabbing it
     in property <length> edge-grab: 6px;
+    in property <bool> finger: false;
 
     /// A press landed: the caller resolves the selection before any drag.
     callback pressed(additive: bool, edge: int);
@@ -1661,6 +1662,7 @@ export component Lanes inherits Rectangle {
             viewport-width: parent.width;
             tool: root.tool;
             edge-grab: root.edge-grab;
+            finger: root.finger;
             // Read back through the lane the clip sits on rather than carried
             // on the clip: locking is a property of the lane, and copying it
             // onto every clip would be one more thing to keep in step.

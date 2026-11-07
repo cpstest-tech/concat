@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::commands::{self, Command, IdMint};
+use crate::commands::IdMint;
 use crate::doc::DocumentSettings;
 use crate::model::ranges::{
     MAX_OFFSET, MAX_SCALE, MAX_SPEED, MAX_STRETCH, MIN_CLIP_DURATION, MIN_SCALE, MIN_SPEED,
@@ -154,28 +154,33 @@ pub fn import(draft: &Draft) -> Result<Imported, CapcutError> {
             height: video.height,
             rate_num: video.rate_num,
             rate_den: video.rate_den,
-            canvas: video.canvas,
         });
         let transitions = std::mem::take(&mut media.transitions);
         let id = timeline.id.clone();
         project.timelines.push(Arc::new(timeline));
         project.active_timeline_id = id;
-        // Each through the editor's own command, so it lands on a lane the
-        // way one dragged on would.
-        for (start, duration, package, name) in transitions {
-            let placed = commands::apply(
-                &mut project,
-                &mut mint,
-                Command::AddTransitionClip {
-                    track_id: None,
-                    start,
-                    duration: Some(duration),
-                    transition_id: package.to_owned(),
-                    name,
-                },
-            );
-            if placed.is_err() {
-                notes.note("a transition that would not fit on the timeline");
+        // Each through the cut transition model on the second clip.
+        for (start, duration, package, _name) in transitions {
+            if let Some(timeline) = project
+                .timelines
+                .iter_mut()
+                .find(|t| t.id == project.active_timeline_id)
+            {
+                let timeline = Arc::make_mut(timeline);
+                if let Some(clip) = timeline
+                    .clips
+                    .iter_mut()
+                    .find(|c| (c.start - start).abs() < 0.05)
+                {
+                    let clip = Arc::make_mut(clip);
+                    clip.transition_in = Some(crate::model::Transition {
+                        id: package.to_owned(),
+                        duration,
+                        params: Default::default(),
+                    });
+                } else {
+                    notes.note("a transition that would not fit on the timeline");
+                }
             }
         }
     }
@@ -323,7 +328,6 @@ fn read_timeline(
         // As a new project's: no fill behind the picture, and a clip's
         // sound moving with its picture.
         background: Background::None,
-        linkage: true,
         ..Timeline::default()
     };
 

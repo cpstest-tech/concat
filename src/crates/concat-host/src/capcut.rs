@@ -158,7 +158,6 @@ pub fn import(folder: &Path, location: &str) -> Result<Import, String> {
         settings.height,
         settings.rate_num,
         settings.rate_den,
-        settings.canvas,
     )?;
     let mut settings = imported.settings.clone();
     settings.name = name;
