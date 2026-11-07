@@ -25,6 +25,7 @@ pub mod pool;
 pub mod prefetch;
 pub mod probe;
 pub mod samples;
+pub mod svg;
 pub mod treat;
 
 pub use decode::{ColorRange, ColorSignal, DecodeOptions, Decoder, FrameSource, SeekableSource};
@@ -33,7 +34,7 @@ pub use error::{Error, Result};
 pub use ffi::{init, linked_version};
 pub use hardware::{HwDevice, HwPolicy, hardware_decode, set_hardware_decode};
 pub use peaks::{Peaks, Pyramid};
-pub use pool::{CacheStats, FrameCache, FrameRequest, ReaderPool};
+pub use pool::{CacheStats, FrameCache, FrameRequest, Nearest, ReaderPool};
 pub use prefetch::{Cursor, Direction, Moment, Prefetcher, Priority};
 pub use probe::{AudioStream, MediaInfo, VideoStream, probe};
 pub use samples::{AudioDecoder, AudioOptions, SampleFormat};

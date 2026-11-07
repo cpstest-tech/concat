@@ -336,6 +336,157 @@ impl fmt::Debug for Frame {
     }
 }
 
+/// How a [`Yuv420`] picture's two chroma planes are laid out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Chroma {
+    /// One plane of U and V interleaved, as hardware encoders take it.
+    Nv12,
+    /// A plane of U, then a plane of V, as software encoders take it.
+    I420,
+}
+
+/// What a [`Yuv420`] picture is: its chroma layout, and the range its
+/// levels span.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct YuvLayout {
+    /// How the chroma is laid out.
+    pub chroma: Chroma,
+    /// Full range (0-255) rather than limited (16-235, 16-240).
+    pub full_range: bool,
+}
+
+/// A finished SDR picture as an encoder takes it: eight-bit 4:2:0 YUV with
+/// BT.709's coefficients, in planes, rows packed tightly. The luma plane
+/// comes first, `width * height` bytes; then the chroma, half as wide and
+/// half as tall, in the layout's arrangement.
+///
+/// What the compositor hands an export when the encoder says it takes
+/// one, so that a frame is converted where it was drawn and comes back
+/// at a byte and a half a pixel instead of four.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Yuv420 {
+    width: u32,
+    height: u32,
+    layout: YuvLayout,
+    data: Vec<u8>,
+}
+
+impl Yuv420 {
+    /// Bytes a picture of this size holds: a luma byte a pixel, and two
+    /// chroma bytes for each two by two block. Both sides must be even.
+    pub const fn byte_len(width: u32, height: u32) -> usize {
+        let luma = width as usize * height as usize;
+        luma + luma / 2
+    }
+
+    /// Wraps `data`, the planes as [`Yuv420`] describes them. `None` when a
+    /// side is odd or the length is wrong.
+    pub fn new(width: u32, height: u32, layout: YuvLayout, data: Vec<u8>) -> Option<Self> {
+        (width.is_multiple_of(2)
+            && height.is_multiple_of(2)
+            && data.len() == Self::byte_len(width, height))
+        .then_some(Self {
+            width,
+            height,
+            layout,
+            data,
+        })
+    }
+
+    /// Width in pixels.
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The chroma layout and range.
+    pub const fn layout(&self) -> YuvLayout {
+        self.layout
+    }
+
+    /// The luma plane, `width` bytes a row.
+    pub fn luma(&self) -> &[u8] {
+        &self.data[..self.width as usize * self.height as usize]
+    }
+
+    /// The chroma: one interleaved plane `width` bytes a row for
+    /// [`Chroma::Nv12`], or a U plane then a V plane `width / 2` bytes a
+    /// row for [`Chroma::I420`].
+    pub fn chroma(&self) -> &[u8] {
+        &self.data[self.width as usize * self.height as usize..]
+    }
+
+    /// Samples a downscaled RGBA thumbnail up to `target_width` pixels wide
+    /// for live export preview, converting only the sampled pixels from BT.709 YUV.
+    pub fn thumbnail(&self, target_width: u32) -> Frame {
+        let w = self.width;
+        let h = self.height;
+        if w == 0 || h == 0 || target_width == 0 {
+            return Frame::black(1, 1);
+        }
+        let out_w = w.min(target_width);
+        let factor = w as f32 / out_w as f32;
+        let out_h = ((h as f32 / factor).round() as u32).max(1);
+        let luma = self.luma();
+        let chroma = self.chroma();
+        let cw = (w / 2) as usize;
+        let mut out = Vec::with_capacity((out_w * out_h * 4) as usize);
+        for ty in 0..out_h {
+            let sy = ((ty as f32 * factor) as u32).min(h - 1) as usize;
+            let cy = sy / 2;
+            for tx in 0..out_w {
+                let sx = ((tx as f32 * factor) as u32).min(w - 1) as usize;
+                let cx = sx / 2;
+                let y_raw = f32::from(luma[sy * w as usize + sx]);
+                let (cb_raw, cr_raw) = match self.layout.chroma {
+                    Chroma::Nv12 => {
+                        let idx = cy * (w as usize) + cx * 2;
+                        (f32::from(chroma[idx]), f32::from(chroma[idx + 1]))
+                    }
+                    Chroma::I420 => {
+                        let plane_len = chroma.len() / 2;
+                        let idx = cy * cw + cx;
+                        (f32::from(chroma[idx]), f32::from(chroma[plane_len + idx]))
+                    }
+                };
+                let (y, cb, cr) = if self.layout.full_range {
+                    (y_raw / 255.0, (cb_raw - 128.0) / 255.0, (cr_raw - 128.0) / 255.0)
+                } else {
+                    (
+                        (y_raw - 16.0) / 219.0,
+                        (cb_raw - 128.0) / 224.0,
+                        (cr_raw - 128.0) / 224.0,
+                    )
+                };
+                let r = (y + 1.5748 * cr).clamp(0.0, 1.0);
+                let g = (y - 0.1873 * cb - 0.4681 * cr).clamp(0.0, 1.0);
+                let b = (y + 1.8556 * cb).clamp(0.0, 1.0);
+                out.extend_from_slice(&[
+                    (r * 255.0).round() as u8,
+                    (g * 255.0).round() as u8,
+                    (b * 255.0).round() as u8,
+                    255,
+                ]);
+            }
+        }
+        Frame::from_rgba(out_w, out_h, out).unwrap_or_else(|| Frame::black(out_w, out_h))
+    }
+}
+
+impl fmt::Debug for Yuv420 {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Yuv420({}x{}, {:?})",
+            self.width, self.height, self.layout
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -139,6 +139,7 @@ pollster.workspace = true
 concat-core.workspace = true
 concat-media.workspace = true
 concat-project.workspace = true
+concat-render = { workspace = true, features = ["gpu"] }
 concat-export.workspace = true
 concat-host = { workspace = true, features = ["gpu"] }
 concat-speech = { workspace = true, features = ["chatterbox"] }

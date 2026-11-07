@@ -1488,6 +1488,9 @@ export component PhoneEditor inherits Rectangle {
             families: Editor.font-families;
             set(field, value) => { Editor.clip-set(field, value); }
             set-text(field, value) => { Editor.clip-set-text(field, value); }
+            set-words(text, caret) => { Editor.clip-set-words(text, caret); }
+            select-words(anchor, cursor) => { Editor.clip-select-words(anchor, cursor); }
+            reset-words => { Editor.clip-reset-words(); }
             set-colour(field, value) => { Editor.clip-set-colour(field, value); }
             animation-set(slot, id, duration) => { Editor.clip-animation-set(slot, id, duration); }
             commit => { Editor.clip-commit(); }

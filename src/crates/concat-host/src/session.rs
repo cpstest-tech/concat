@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+// SPDX-FileCopyrightText: 2026 Jareer Abdullah and Concat contributors
 
 //! The engine-owned editing session.
 //!
@@ -112,7 +112,9 @@ impl Session {
             let old = link.id.clone();
             let changed = catalogue.upgrade(link);
             let pair = (old, link.id.clone());
-            if changed && !upgraded.contains(&pair) {
+            // A link carried over to its own package's newer version opens
+            // as it looked, near enough, and says nothing.
+            if changed && pair.0 != pair.1 && !upgraded.contains(&pair) {
                 upgraded.push(pair);
             }
             changed
@@ -332,8 +334,15 @@ mod tests {
             std::env::temp_dir().join(format!("concat-session-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).expect("scratch dir");
-        let info = projects::create(&scratch.to_string_lossy(), "Fresh", 1920, 1080, 30, 1)
-            .expect("creates");
+        let info = projects::create(
+            &scratch.to_string_lossy(),
+            "Fresh",
+            1920,
+            1080,
+            30,
+            1,
+        )
+        .expect("creates");
 
         let mut session = Session::open_info(&info).expect("opens the settings-only manifest");
         assert!(!session.can_undo());

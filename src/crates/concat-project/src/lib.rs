@@ -26,6 +26,7 @@ pub mod doc;
 pub mod editor;
 pub mod model;
 pub mod placement;
+pub mod runs;
 pub mod speed;
 pub mod srt;
 
@@ -40,6 +41,143 @@ pub use model::Project;
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    #[test]
+    fn typography_preserves_source_and_round_trips() {
+        use crate::model::{TextCase, TextStyle};
+        let original = "«È UNA PROVA!» POI, UN’ALTRA. già qui? sì!";
+        let mut style = TextStyle {
+            content: original.into(),
+            text_case: TextCase::Sentence,
+            underline: true,
+            strikethrough: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            style.display_content(),
+            "«È una prova!» Poi, un’altra. Già qui? Sì!"
+        );
+        assert_eq!(style.content, original);
+        let saved = serde_json::to_value(&style).unwrap();
+        let restored: TextStyle = serde_json::from_value(saved).unwrap();
+        assert_eq!(restored, style);
+        style.text_case = TextCase::Lower;
+        assert_eq!(style.display_content(), original.to_lowercase());
+        style.text_case = TextCase::Upper;
+        assert_eq!(style.display_content(), original.to_uppercase());
+        style.text_case = TextCase::Original;
+        assert_eq!(style.display_content(), original);
+    }
+
+    /// Words styled over a range, and cleared, as undoable steps from the
+    /// wire; the title's own look is left alone, and the runs survive a
+    /// save and a reopen.
+    #[test]
+    fn a_range_of_a_titles_words_is_styled_undone_and_saved() {
+        use crate::commands::Command;
+        use crate::editor::Editor;
+        use crate::model::{RunStyle, TextStyle};
+        let mut editor = Editor::new();
+        let id = editor
+            .apply(Command::AddTextClip {
+                track_id: None,
+                above: true,
+                start: 0.0,
+                style: Some(TextStyle {
+                    content: "make this red".into(),
+                    ..TextStyle::default()
+                }),
+                duration: Some(3.0),
+                offset_y: None,
+                animations: None,
+            })
+            .unwrap()
+            .created_id
+            .unwrap();
+        let command: Command = serde_json::from_value(json!({
+            "op": "styleTextRange", "clipId": id, "start": 10, "end": 13,
+            "patch": { "color": "#ff0000", "fontWeight": 800 }
+        }))
+        .expect("the wire shape parses");
+        assert!(editor.apply(command).unwrap().applied);
+        let text = |editor: &Editor| {
+            editor
+                .project()
+                .active()
+                .clip(&id)
+                .unwrap()
+                .text
+                .clone()
+                .unwrap()
+        };
+        let styled = text(&editor);
+        assert_eq!(styled.color, "#ffffff", "the title's own look is untouched");
+        assert_eq!(styled.runs.len(), 1);
+        assert_eq!((styled.runs[0].start, styled.runs[0].end), (10, 13));
+        assert_eq!(styled.runs[0].style.font_weight, Some(800.0));
+
+        let document = editor.to_document(&settings());
+        let restored = Editor::from_document(&document).expect("loads");
+        assert_eq!(restored.project(), editor.project());
+
+        assert!(editor.undo());
+        assert!(text(&editor).runs.is_empty());
+        assert!(editor.redo());
+        assert!(
+            editor
+                .apply(Command::ClearTextStyles {
+                    clip_id: id.clone(),
+                    start: Some(10),
+                    end: Some(11),
+                })
+                .unwrap()
+                .applied
+        );
+        assert_eq!(
+            (text(&editor).runs[0].start, text(&editor).runs[0].end),
+            (11, 13)
+        );
+        assert!(
+            editor
+                .apply(Command::ClearTextStyles {
+                    clip_id: id.clone(),
+                    start: None,
+                    end: None,
+                })
+                .unwrap()
+                .applied
+        );
+        assert!(text(&editor).runs.is_empty());
+        // Nothing to do is nothing done, and not a step to undo.
+        assert!(
+            !editor
+                .apply(Command::StyleTextRange {
+                    clip_id: id,
+                    start: 4,
+                    end: 4,
+                    patch: RunStyle {
+                        italic: Some(true),
+                        ..RunStyle::default()
+                    },
+                })
+                .unwrap()
+                .applied
+        );
+    }
+
+    #[test]
+    fn old_styles_keep_their_original_appearance() {
+        use crate::model::{TextCase, TextStyle};
+        let style: TextStyle = serde_json::from_value(json!({
+            "content": "Keep MY Case", "italic": true, "fontWeight": 500
+        }))
+        .unwrap();
+        assert_eq!(style.text_case, TextCase::Original);
+        assert_eq!(style.display_content(), "Keep MY Case");
+        assert!(!style.underline && !style.strikethrough);
+        assert!(style.italic);
+        assert_eq!(style.font_weight, 500.0);
+    }
 
     use crate::commands::{
         ClipMove, ClipPatch, Command, NewMedia, PlayheadSide, TrackFlag, TrimEdge,
@@ -576,6 +714,58 @@ mod tests {
             clip.framing_scale(Framing::Fill, (Some(1920), Some(1080)), (1000, 1000), 0.0),
             None
         );
+    }
+
+    /// A clip made like another takes on every field but its place, and
+    /// the command cannot be sent from outside.
+    #[test]
+    fn a_matched_clip_takes_everything_but_its_place() {
+        let (mut editor, media_id, source_id) = fixture();
+        let track_id = editor.project().active().tracks[0].id.clone();
+        let mut like = editor
+            .project()
+            .active()
+            .clip(&source_id)
+            .expect("clip")
+            .clone();
+        like.mask = Some(crate::model::ClipMask::of(crate::model::MaskShape::Linear));
+        like.stabilize = Some(crate::model::Stabilize::default());
+        like.opacity = 0.4;
+        like.transition_in = Some(crate::model::Transition {
+            id: "concat.dissolve".to_owned(),
+            duration: 0.5,
+            params: Default::default(),
+        });
+        like.detached_from = Some("c99".to_owned());
+        like.start = 99.0;
+        let copy_id = editor
+            .apply(Command::AddClip {
+                media_id,
+                track_id,
+                start: 20.0,
+                ripple: false,
+            })
+            .expect("adds")
+            .created_id
+            .expect("id");
+        let applied = editor
+            .apply(Command::MatchClip {
+                clip_id: copy_id.clone(),
+                like: Box::new(like.clone()),
+            })
+            .expect("matches")
+            .applied;
+        assert!(applied);
+        let copy = editor.project().active().clip(&copy_id).expect("copy");
+        assert_eq!(copy.mask, like.mask);
+        assert_eq!(copy.stabilize, like.stabilize);
+        assert_eq!(copy.opacity, 0.4);
+        assert_eq!((copy.id.as_str(), copy.start), (copy_id.as_str(), 20.0));
+        assert_eq!(copy.transition_in, None, "its neighbours' business");
+        assert_eq!(copy.detached_from, None);
+
+        let wire = serde_json::json!({ "op": "matchClip", "clipId": copy_id, "like": {} });
+        assert!(serde_json::from_value::<Command>(wire).is_err());
     }
 
     /// Editor with one media item and one clip at [0, 10) on track one.
@@ -1571,6 +1761,7 @@ mod tests {
                 item: copy,
                 source_start: Some(0.0),
                 enhanced: false,
+                offset: 0.0,
             })
             .expect("replaces");
         assert!(outcome.applied);
@@ -1604,6 +1795,7 @@ mod tests {
                 item: copy.clone(),
                 source_start: None,
                 enhanced: false,
+                offset: 0.0,
             })
             .expect("replaces");
         assert!(outcome.applied);
@@ -1629,6 +1821,7 @@ mod tests {
                 item: copy.clone(),
                 source_start: None,
                 enhanced: false,
+                offset: 0.0,
             })
             .expect("no-op");
         assert!(!again.applied);
@@ -1644,6 +1837,7 @@ mod tests {
                 },
                 source_start: None,
                 enhanced: false,
+                offset: 0.0,
             })
             .expect("no-op");
         assert!(!nobody.applied);
@@ -1677,6 +1871,7 @@ mod tests {
                     item: bad,
                     source_start: None,
                     enhanced: false,
+                    offset: 0.0,
                 })
                 .is_err()
         );
@@ -5253,6 +5448,7 @@ mod tests {
                 item: item("/a-enhanced.mp4"),
                 source_start: None,
                 enhanced: true,
+                offset: 0.0,
             })
             .expect("replaces")
             .created_id
@@ -5289,12 +5485,58 @@ mod tests {
         editor.undo();
         assert_eq!(shown(&editor).media_id, original, "one undo step");
 
+        // A copy of a span: it starts 4 s into the original, so the clip's
+        // in-point is 4 s less in it, and switching moves it back and forth
+        // with the same moment on screen.
+        // The head trimmed 6 s in, so the in-point is past the copy's start.
+        editor
+            .apply(Command::TrimClip {
+                clip_id: clip.clone(),
+                edge: crate::commands::TrimEdge::Start,
+                delta: 6.0,
+                ripple: false,
+            })
+            .expect("trims");
+        editor
+            .apply(Command::SetClipEnhanced {
+                clip_id: clip.clone(),
+                on: false,
+            })
+            .expect("off");
+        let original_start = shown(&editor).source_start;
+        assert!(original_start >= 4.0, "{original_start}");
+        editor
+            .apply(Command::ReplaceClipMedia {
+                clip_id: clip.clone(),
+                item: item("/a-span.mp4"),
+                source_start: Some(original_start - 4.0),
+                enhanced: true,
+                offset: 4.0,
+            })
+            .expect("replaces");
+        assert_eq!(shown(&editor).source_start, original_start - 4.0);
+        editor
+            .apply(Command::SetClipEnhanced {
+                clip_id: clip.clone(),
+                on: false,
+            })
+            .expect("off");
+        assert_eq!(shown(&editor).source_start, original_start);
+        editor
+            .apply(Command::SetClipEnhanced {
+                clip_id: clip.clone(),
+                on: true,
+            })
+            .expect("on");
+        assert_eq!(shown(&editor).source_start, original_start - 4.0);
+
         editor
             .apply(Command::ReplaceClipMedia {
                 clip_id: clip.clone(),
                 item: item("/a-reversed.mp4"),
                 source_start: None,
                 enhanced: false,
+                offset: 0.0,
             })
             .expect("replaces");
         assert_eq!(shown(&editor).enhanced, None);

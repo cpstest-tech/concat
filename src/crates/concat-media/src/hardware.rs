@@ -816,7 +816,7 @@ pub(crate) fn download(frame: &Video) -> Result<Video, ffmpeg::Error> {
         const AV_HWFRAME_MAP_READ: libc::c_int = 1;
         let src = frame.as_ptr();
         let dst = copy.as_mut_ptr();
-        let mappable = (*src).format == sys::AVPixelFormat::VIDEOTOOLBOX as libc::c_int;
+        let mappable = (*src).format == sys::AVPixelFormat::VIDEOTOOLBOX.0;
         if !mappable || sys::av_hwframe_map(dst, src, AV_HWFRAME_MAP_READ) < 0 {
             let ret = sys::av_hwframe_transfer_data(dst, src, 0);
             if ret < 0 {

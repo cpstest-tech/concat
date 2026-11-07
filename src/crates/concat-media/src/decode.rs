@@ -578,6 +578,40 @@ fn video_filter(
     parts.join(",")
 }
 
+/// The libvpx decoder that reads this stream's WebM alpha layer, when it
+/// has one the built-in decoder would drop.
+///
+/// A WebM track keeps its alpha in a second plane and marks itself
+/// `alpha_mode=1`; libavcodec's own VP8 and VP9 decoders decode only the
+/// colour plane, and a hardware decoder drops the layer too, so the picture
+/// arrives opaque. libvpx reads both planes. See
+/// <https://github.com/jub0t/Concat/issues/429>.
+fn alpha_decoder(stream: &ffmpeg::format::stream::Stream<'_>) -> Option<&'static str> {
+    let alpha = stream
+        .metadata()
+        .get("alpha_mode")
+        .is_some_and(|mode| mode.trim() == "1");
+    if !alpha {
+        return None;
+    }
+    match stream.parameters().id() {
+        ffmpeg::codec::Id::VP8 => Some("libvpx"),
+        ffmpeg::codec::Id::VP9 => Some("libvpx-vp9"),
+        _ => None,
+    }
+}
+
+/// Where a container seek was asked to land, until the first picture after
+/// it shows whether it did.
+#[derive(Clone, Copy, Debug)]
+struct Landing {
+    /// The instant the caller wants, measured from the stream's first frame.
+    target: Rational,
+    /// The instant the container was last asked for: the target itself, or
+    /// a point before it once the container has overshot.
+    asked: Rational,
+}
+
 /// One decoded picture, before the filtergraph, plus its converted output
 /// once built when the graph is stateless so a paced or repeating decoder
 /// emitting the same source picture across ticks neither re-runs the
@@ -594,9 +628,9 @@ pub struct Decoder {
     input: format::context::Input,
     stream: usize,
     time_base: ffmpeg::Rational,
-    /// Where the stream's timestamps start; every timestamp read has this
+    /// Where the file's timestamps start; every timestamp read has this
     /// taken off and every seek has it put back, so the file reads from
-    /// its own first frame. See `ffi::start_of`.
+    /// its own first frame, in step with its sound. See `ffi::origin`.
     start: Rational,
     decoder: decoder::Video,
     rotation: i64,
@@ -613,6 +647,15 @@ pub struct Decoder {
     /// that moved to software mid-file picks up, after the frame the
     /// device last gave it.
     discard_through: Option<Rational>,
+    /// The seek whose landing is still to be checked; see
+    /// [`Decoder::retreat`].
+    landing: Option<Landing>,
+    /// The last picture short of a seek's target, kept back in case none
+    /// lands on the target itself; see [`Decoder::next_source`].
+    short: Option<Video>,
+    /// A picture already out of the codec, to be handed on next: the one
+    /// past the target that sent the kept-back picture out first.
+    stashed: Option<Video>,
     /// Where the codec runs when it is not on the CPU, or `None` in
     /// software, which is also where a failed device ends.
     hardware: Option<OnChip>,
@@ -651,7 +694,9 @@ impl Decoder {
         // rule, every one of them failed to open on the CPU renderer. A
         // chain that is not a graph fails at the parse, with its error.
 
-        let path = path.as_ref();
+        // An SVG is read as its drawing, which FFmpeg can open; see svg.rs.
+        let drawn = crate::svg::readable(path.as_ref())?;
+        let path = drawn.as_path();
         let input = ffmpeg::format::input(path).map_err(|error| ffi::fail("open", path, error))?;
         let stream = input
             .streams()
@@ -661,8 +706,10 @@ impl Decoder {
             })?;
         let stream_index = stream.index();
         let time_base = stream.time_base();
-        let start = ffi::start_of(&stream);
+        let start = ffi::origin(&input);
         let rotation = ffi::rotation(&stream);
+        // Wide pixels are shown square: see `ffi::sample_aspect`.
+        let aspect = ffi::sample_aspect(&stream);
         let coded = {
             let parameters = stream.parameters();
             (parameters.width(), parameters.height())
@@ -690,14 +737,29 @@ impl Decoder {
         } else {
             options.hardware.device_for(codec, format)
         };
-        let (decoder, accelerated) = match chosen_device {
+        // A WebM alpha layer is a plane the built-in VP8 and VP9 decoders
+        // do not read, and no hwaccel hands it back either: the picture
+        // would arrive opaque and cover the lanes below. libvpx reads it,
+        // in software, so a track that says it has one goes there and to
+        // no device.
+        // https://github.com/jub0t/Concat/issues/429
+        let (decoder, accelerated) = match (alpha_decoder(&stream), chosen_device) {
+            (Some(name), _) => match Self::open_codec(path, &stream, options, Codec::Named(name)) {
+                Ok((decoder, _)) => (decoder, None),
+                Err(error) => {
+                    // A build without libvpx still plays the picture, with
+                    // the alpha layer dropped rather than the file refused.
+                    log::warn!("{name} does not open here: {error}");
+                    software()?
+                }
+            },
             // MediaCodec: its own decoder, by name, when a seat is free.
             // Not for a keyframes-only reader: the wrapper ignores
             // `skip_frame`, so a filmstrip tile would decode its whole
             // group of pictures instead of one frame, and its pipeline
             // holds the first picture back until several packets are in -
             // a one-frame grab is the chip's worst case and the CPU's best.
-            Some(device @ HwDevice::MediaCodec) => {
+            (None, Some(device @ HwDevice::MediaCodec)) => {
                 let wrapped = hardware::mediacodec_decoder(codec, format)
                     .filter(|_| !options.keyframes_only)
                     .filter(|&name| {
@@ -734,7 +796,7 @@ impl Decoder {
                     None => software()?,
                 }
             }
-            Some(device) => {
+            (None, Some(device)) => {
                 let lease = if options.hardware == HwPolicy::Preference {
                     let bytes =
                         hardware::surfaces_bytes(coded.0.max(0) as u32, coded.1.max(0) as u32, format);
@@ -760,7 +822,7 @@ impl Decoder {
                     _ => software()?,
                 }
             }
-            None => software()?,
+            (None, None) => software()?,
         };
         // The caller's word over the file's, where the caller has one: the
         // file's tag is what the override exists to correct. Where neither
@@ -794,7 +856,7 @@ impl Decoder {
 
         let (width, height) = match options.size {
             Some(size) => size,
-            None => ffi::displayed(coded.0, coded.1, rotation),
+            None => ffi::displayed(coded.0, coded.1, aspect, rotation),
         };
         if width == 0 || height == 0 {
             return Err(Error::Probe {
@@ -817,6 +879,9 @@ impl Decoder {
             graph: None,
             discard_before: None,
             discard_through: None,
+            landing: None,
+            short: None,
+            stashed: None,
             hardware: accelerated,
             held: None,
             fed: false,
@@ -855,11 +920,23 @@ impl Decoder {
         // scrub waited 400 ms for its frame. Frame threads for that walk,
         // slice threads for files cut into slices; zero lets the codec
         // count, and a caller working in the background says how many.
+        // Keyframes only, no frame threads: they hold each picture back
+        // until every thread has a packet, and with the frames between
+        // skipped that is a keyframe a thread - the next ten of them read,
+        // and decoded, before the one sought came out. A scrub's keyframe
+        // of a 4K file with one every four seconds took up to 260 ms so.
         // SAFETY: the context is not opened yet, which is when threading is
         // set, and both fields are plain integers.
         unsafe {
             let raw = context.as_mut_ptr();
-            (*raw).thread_type = ffmpeg::sys::FF_THREAD_FRAME | ffmpeg::sys::FF_THREAD_SLICE;
+            if options.keyframes_only {
+                (*raw).thread_type = ffmpeg::sys::FF_THREAD_SLICE;
+                (*raw).flags |= ffmpeg::sys::AV_CODEC_FLAG_LOW_DELAY as libc::c_int;
+                (*raw).strict_std_compliance = ffmpeg::sys::FF_COMPLIANCE_UNOFFICIAL;
+                (*raw).has_b_frames = 0;
+            } else {
+                (*raw).thread_type = ffmpeg::sys::FF_THREAD_FRAME | ffmpeg::sys::FF_THREAD_SLICE;
+            }
             (*raw).thread_count = i32::from(options.threads);
         }
         let (accelerated, named) = match codec {
@@ -933,15 +1010,14 @@ impl Decoder {
             Self::open_codec(&self.path, &stream, &self.options, Codec::Software)?.0
         };
         let at = from.unwrap_or(self.origin);
-        let target = ffi::av_ticks(at + self.start);
-        self.input
-            .seek(target, ..=target)
-            .map_err(|error| ffi::fail("seek", &self.path, error))?;
+        self.seek_to(at)?;
         self.decoder = decoder;
         // The old codec, and its seat on the chip, go now.
         self.hardware = None;
         self.held = None;
         self.fed = false;
+        self.short = None;
+        self.stashed = None;
         if !self.options.keyframes_only {
             if after {
                 self.discard_through = Some(at);
@@ -952,12 +1028,144 @@ impl Decoder {
         Ok(())
     }
 
-    /// The container seek, and the state reset that goes with it.
-    fn jump(&mut self, to: Rational) -> Result<()> {
-        let target = ffi::av_ticks(to + self.start);
+    /// The container seek to `target`, in `AV_TIME_BASE` ticks: the keyframe
+    /// at or before it, never one after, so the frames short of the target
+    /// can be decoded and dropped. The MP4s VLC's stream output writes leave
+    /// their first picture out of the keyframe table, and FFmpeg then finds
+    /// no keyframe before any target short of the second one; those seeks
+    /// go to 0 instead, which their edit list - the picture starts 14 ms
+    /// in - still lets land on the first picture. Without it the monitor
+    /// stayed black for those seconds and the media thumbnail never came.
+    fn seek_input(&mut self, target: i64) -> Result<()> {
         self.input
             .seek(target, ..=target)
-            .map_err(|error| ffi::fail("seek", &self.path, error))?;
+            .or_else(|error| {
+                log::debug!(
+                    "{}: no keyframe at or before {target}, reading from the top ({error})",
+                    self.path.display()
+                );
+                self.input.seek(0, ..=0).map_err(|_| error)
+            })
+            .map_err(|error| ffi::fail("seek", &self.path, error))
+    }
+
+    /// Back to the first packet of the file.
+    ///
+    /// A stream whose clock may jump - MPEG-TS and MPEG-PS, which say so
+    /// with `AVFMT_TS_DISCONT` - goes back by byte. Its first timestamp is
+    /// 1.4 s or more in, and a seek to it by time is a search over the
+    /// file's timestamps that, asked for the very first one (or for a
+    /// microsecond short of it, which is where rounding `start` down to
+    /// whole microseconds puts the request), finds nothing at or before it
+    /// and leaves the demuxer at the end of the file: no picture at all.
+    /// Everything else seeks by time to its own first timestamp.
+    fn seek_top(&mut self) -> Result<()> {
+        // SAFETY: the input is open for the decoder's lifetime, so its
+        // format pointer is valid; `flags` is a plain integer.
+        let by_byte = unsafe {
+            let format = (*self.input.as_ptr()).iformat;
+            !format.is_null() && {
+                let flags = (*format).flags;
+                flags & ffmpeg::sys::AVFMT_TS_DISCONT != 0
+                    && flags & ffmpeg::sys::AVFMT_NO_BYTE_SEEK == 0
+            }
+        };
+        if by_byte {
+            // SAFETY: an open input; a byte seek to offset 0 of every
+            // stream.
+            let done = unsafe {
+                ffmpeg::sys::av_seek_frame(
+                    self.input.as_mut_ptr(),
+                    -1,
+                    0,
+                    ffmpeg::sys::AVSEEK_FLAG_BYTE,
+                )
+            };
+            if done >= 0 {
+                return Ok(());
+            }
+        }
+        self.seek_input(ffi::av_ticks(self.start))
+    }
+
+    /// The container seek to `at`, measured from the stream's first frame,
+    /// with its landing left for the first picture after it to check. The
+    /// start of the stream is the top of the file, which needs no check.
+    fn seek_to(&mut self, at: Rational) -> Result<()> {
+        if at <= Rational::ZERO {
+            self.landing = None;
+            return self.seek_top();
+        }
+        self.landing = Some(Landing {
+            target: at,
+            asked: at,
+        });
+        self.seek_input(ffi::av_ticks(at + self.start))
+    }
+
+    /// Seeks again, further back, after the container landed past the
+    /// picture `landing` wanted - or past the end of the picture stream.
+    ///
+    /// A seek asks for the keyframe at or before the target, and MP4, MOV
+    /// and Matroska keep an index that answers exactly. MPEG-TS and MPEG-PS
+    /// keep none: libavformat searches the file's timestamps and lands a
+    /// group of pictures late, on the next keyframe, or - with one keyframe
+    /// every few seconds - at the end of the file. A camera's MTS showed
+    /// the wrong moment, or no picture at all, wherever a scrub or a
+    /// clip's in-point sought to, and an MPEG-2 .mpg started twelve frames
+    /// in (#457). The first picture after a seek tells: one timestamped
+    /// after the target means the picture on screen at the target was
+    /// skipped. The retry asks for a point a second before the target, then
+    /// four, then sixteen and so on, and for the top of the file once that
+    /// passes the start, which always lands; the frames short of the target
+    /// are decoded and dropped as after any seek.
+    fn retreat(&mut self, landing: Landing) -> Result<()> {
+        let short = landing.target - landing.asked;
+        let step = if short.is_zero() {
+            Rational::from_int(1)
+        } else {
+            short * Rational::from_int(4)
+        };
+        let back = landing.target - step;
+        log::debug!(
+            "{}: a seek for {:.3} s landed past it; seeking from {:.3} s",
+            self.path.display(),
+            landing.target.as_f64(),
+            back.as_f64().max(0.0)
+        );
+        if back <= Rational::ZERO {
+            self.landing = None;
+            self.seek_top()?;
+        } else {
+            self.landing = Some(Landing {
+                target: landing.target,
+                asked: back,
+            });
+            self.seek_input(ffi::av_ticks(back + self.start))?;
+        }
+        if self.fed {
+            self.decoder.flush();
+            self.fed = false;
+        }
+        self.held = None;
+        self.short = None;
+        self.stashed = None;
+        Ok(())
+    }
+
+    /// One tick of the stream's clock, and never more than a millisecond:
+    /// how far past an instant a frame meant for it can be stamped by a
+    /// container that rounds - Matroska, WebM, FLV and ASF to whole
+    /// milliseconds - without being taken for the frame after it.
+    fn slack(&self) -> Rational {
+        ffi::seconds(1, self.time_base)
+            .unwrap_or(Rational::ZERO)
+            .min(Rational::new(1, 1000))
+    }
+
+    /// The container seek, and the state reset that goes with it.
+    fn jump(&mut self, to: Rational) -> Result<()> {
+        self.seek_to(to)?;
         // Every picture and packet the codec holds is from before the
         // seek: out, and so is the packet it refused. For MediaCodec this
         // is the codec's own flush, which it needs before a jump.
@@ -966,6 +1174,8 @@ impl Decoder {
             self.fed = false;
         }
         self.held = None;
+        self.short = None;
+        self.stashed = None;
         // Keyframes only: the picture the container landed on is the one
         // wanted, and discarding up to the target would throw it away and
         // wait for the *next* keyframe, a whole group of pictures late.
@@ -993,48 +1203,70 @@ impl Decoder {
     }
 
     /// The next picture out of the codec, or `None` at the end of the file.
-    /// Frames before the discard point never come out of here, and a frame
-    /// from a hwaccel device is copied back to memory only once it has
-    /// survived the discard check.
+    /// After a seek the first is the picture on screen at the target: the
+    /// one stamped there, or the last one before it when none is - frames
+    /// before that never come out of here. A frame from a hwaccel device is
+    /// copied back to memory only once it has survived the discard check.
     fn next_source(&mut self) -> Result<Option<Source>> {
         loop {
             // Packets for other streams are skipped; the end of the file
             // drains the codec so its last few frames come out at all; a
             // packet the codec refuses while full is kept and sent again.
-            self.fed = true;
-            let skip_until = match (self.discard_before, self.discard_through) {
-                (Some(a), Some(b)) => Some(a.max(b)),
-                (Some(a), None) | (None, Some(a)) => Some(a),
-                (None, None) => None,
+            let decoded = match self.stashed.take() {
+                Some(frame) => Ok(Some(frame)),
+                None => {
+                    self.fed = true;
+                    let skip_until = match (self.discard_before, self.discard_through) {
+                        (Some(a), Some(b)) => Some(a.max(b)),
+                        (Some(a), None) | (None, Some(a)) => Some(a),
+                        (None, None) => None,
+                    };
+                    let keyframes_only = self.options.keyframes_only;
+                    let wrapped_hw = matches!(self.hardware, Some(OnChip::Wrapped { .. }));
+                    let time_base = self.time_base;
+                    let start = self.start;
+                    let discard = |packet: &ffmpeg::Packet| {
+                        if keyframes_only {
+                            return ffmpeg::Discard::NonKey;
+                        }
+                        if wrapped_hw {
+                            return ffmpeg::Discard::Default;
+                        }
+                        let Some(limit) = skip_until else {
+                            return ffmpeg::Discard::Default;
+                        };
+                        let pkt_pts = packet
+                            .pts()
+                            .and_then(|ticks| ffi::seconds(ticks, time_base))
+                            .map(|pts| pts - start);
+                        if pkt_pts.is_some_and(|pts| pts < limit) {
+                            ffmpeg::Discard::NonReference
+                        } else {
+                            ffmpeg::Discard::Default
+                        }
+                    };
+                    let read = || feed::read_packet(&mut self.input, self.stream);
+                    feed::next_video_frame(&mut self.decoder, &mut self.held, discard, read)
+                }
             };
-            let keyframes_only = self.options.keyframes_only;
-            let wrapped_hw = matches!(self.hardware, Some(OnChip::Wrapped { .. }));
-            let time_base = self.time_base;
-            let start = self.start;
-            let discard = |packet: &ffmpeg::Packet| {
-                if keyframes_only {
-                    return ffmpeg::Discard::NonKey;
-                }
-                if wrapped_hw {
-                    return ffmpeg::Discard::Default;
-                }
-                let Some(limit) = skip_until else {
-                    return ffmpeg::Discard::Default;
-                };
-                let pkt_pts = packet
-                    .pts()
-                    .and_then(|ticks| ffi::seconds(ticks, time_base))
-                    .map(|pts| pts - start);
-                if pkt_pts.is_some_and(|pts| pts < limit) {
-                    ffmpeg::Discard::NonReference
-                } else {
-                    ffmpeg::Discard::Default
-                }
-            };
-            let read = || feed::read_packet(&mut self.input, self.stream);
-            let mut frame = match feed::next_video_frame(&mut self.decoder, &mut self.held, discard, read) {
+            let mut frame = match decoded {
                 Ok(Some(frame)) => frame,
-                Ok(None) => return Ok(None),
+                // Nothing at all after a seek: the container landed past
+                // the end of the picture stream, not on the keyframe asked
+                // for.
+                Ok(None) => match (self.landing.take(), self.short.take()) {
+                    (Some(landing), _) => {
+                        self.retreat(landing)?;
+                        continue;
+                    }
+                    // The picture ended short of the target: its last frame
+                    // is the one on screen there.
+                    (None, Some(short)) => {
+                        self.discard_before = None;
+                        short
+                    }
+                    (None, None) => return Ok(None),
+                },
                 Err(feed::Stall::Read(error)) => return Err(ffi::fail("read", &self.path, error)),
                 Err(stall) if self.hardware.is_some() => {
                     // The device choked on a stream it had accepted.
@@ -1053,10 +1285,25 @@ impl Decoder {
                 }
                 Err(stall) => return Err(feed::fail(stall, &self.path)),
             };
-            let pts = frame
-                .timestamp()
-                .and_then(|ticks| ffi::seconds(ticks, self.time_base))
-                .map(|pts| pts - self.start);
+            let stamp = |frame: &Video| {
+                frame
+                    .timestamp()
+                    .and_then(|ticks| ffi::seconds(ticks, self.time_base))
+                    .map(|pts| pts - self.start)
+            };
+            let mut pts = stamp(&frame);
+            // The first picture after a seek is the keyframe it landed on.
+            // One later than the target - by more than a tick of the
+            // stream's clock, which a container that rounds to milliseconds
+            // can put a frame past its true instant, and never more than a
+            // millisecond, which a clock as coarse as the frames would be -
+            // means the picture on screen at the target was skipped.
+            if let Some(landing) = self.landing.take()
+                && pts.is_some_and(|pts| pts > landing.target + self.slack())
+            {
+                self.retreat(landing)?;
+                continue;
+            }
             if let Some(&OnChip::Accel { device, format, .. }) = self.hardware.as_ref()
                 && frame.format() != format
             {
@@ -1071,10 +1318,30 @@ impl Decoder {
                 );
                 self.hardware = None;
             }
-            if let (Some(before), Some(pts)) = (self.discard_before, pts)
-                && pts < before
-            {
-                continue;
+            // A frame short of a seek's target is let go before it is copied
+            // off the chip: a seek decodes from the keyframe before it, up
+            // to a second or more of frames, and a full-size copy back of
+            // each one it throws away made every scrub on a Windows GPU
+            // decoder wait for all of them (#472). The last of them is kept
+            // back, uncopied: when the next frame is past the target, no
+            // frame sits on it - a variable-rate recording that holds a
+            // still screen for seconds, a phone clip whose frames drift off
+            // the grid - and the picture on screen there is the one before.
+            // Handing on the next instead showed, after any seek into such
+            // a pause, the picture from after it, seconds early (#457).
+            if let (Some(before), Some(at)) = (self.discard_before, pts) {
+                if at < before {
+                    self.short = Some(frame);
+                    continue;
+                }
+                if at > before + self.slack()
+                    && let Some(short) = self.short.take()
+                {
+                    self.stashed = Some(frame);
+                    frame = short;
+                    pts = stamp(&frame);
+                }
+                self.short = None;
             }
             if let (Some(through), Some(pts)) = (self.discard_through, pts)
                 && pts <= through
@@ -1097,6 +1364,24 @@ impl Decoder {
                         continue;
                     }
                 };
+            }
+            // FFmpeg's ProRes decoder reads the picture's matrix into the
+            // stream and leaves every frame it makes untagged, and swscale
+            // then reads BT.601 into what is a BT.709 picture: a ProRes
+            // 4444 overlay's reds came back orange. Its frames are given
+            // the stream's matrix where they say none. Only ProRes: the
+            // other decoders tag their frames as their streams are tagged.
+            if self.decoder.id() == ffmpeg::codec::Id::PRORES
+                && self.color.matrix != ffmpeg::color::Space::Unspecified
+            {
+                // SAFETY: a frame this reader owns; the matrix is a plain
+                // field the filtergraph reads with the picture.
+                unsafe {
+                    let raw = frame.as_mut_ptr();
+                    if (*raw).colorspace == ffmpeg::sys::AVColorSpace::UNSPECIFIED {
+                        (*raw).colorspace = self.color.matrix.into();
+                    }
+                }
             }
             if !self.options.keyframes_only {
                 self.decoder.skip_frame(ffmpeg::Discard::Default);
@@ -1262,12 +1547,21 @@ impl Decoder {
 
         // Advance until `pending` is the first frame after the target, so
         // `current` is the one on screen at it. A frame with no timestamp
-        // counts as the next one in line.
+        // counts as the next one in line. A frame within a tick of the
+        // stream's clock past the target is the one meant for it: Matroska,
+        // WebM, FLV and ASF stamp in whole milliseconds, so the 30 fps
+        // frame due at 1.4667 s says 1.467, and taken at its word every
+        // exported frame from MKV, WebM, FLV or WMV footage was the one
+        // before the picture the preview showed (#457). Never more than a
+        // quarter of an output frame, so a clock as coarse as the frames
+        // themselves does not pull the next one in early.
+        let tick = ffi::seconds(1, self.time_base).unwrap_or(Rational::ZERO);
+        let due = target + tick.min(rate.frame_duration() / Rational::from_int(4));
         while !self.source_done
             && self
                 .pending
                 .as_ref()
-                .is_none_or(|next| next.pts.is_none_or(|pts| pts <= target))
+                .is_none_or(|next| next.pts.is_none_or(|pts| pts <= due))
         {
             if let Some(next) = self.pending.take() {
                 self.current = Some(next);
@@ -1288,9 +1582,11 @@ impl Decoder {
         };
         if self.source_done && self.pending.is_none() && !self.options.looping {
             // Past the last frame. It has already shown once at its own
-            // instant; the file is over.
+            // instant; the file is over. Its stamp is read with the same
+            // tick of slack as above: a last frame stamped late would
+            // otherwise be held for one output frame more than it lasts.
             if let Some(pts) = current.pts
-                && pts + rate.frame_duration() <= target
+                && pts + rate.frame_duration() <= due
             {
                 return Ok(None);
             }
@@ -1444,6 +1740,123 @@ mod tests {
             (0.45..0.65).contains(&at),
             "after a seek to 0.5 s the frame is at {at}"
         );
+    }
+
+    /// A picture coded with wide pixels - HDV and AVCHD's 1440 across, DV's
+    /// 720 - is probed and decoded at the width a player shows it, not
+    /// squeezed into a pillarbox. The fixture codes 48 by 32 with pixels a
+    /// third wider than tall, its left third white: shown 64 by 32, the
+    /// white still a third of the width (#457).
+    #[test]
+    fn a_picture_of_wide_pixels_is_decoded_at_its_shown_width() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/wide-pixels-hdv.m2ts");
+        let video = crate::probe(path)
+            .expect("probes")
+            .video
+            .expect("a picture");
+        assert_eq!((video.width, video.height), (64, 32));
+        let mut decoder = Decoder::open(path, &DecodeOptions::default()).expect("opens");
+        assert_eq!((decoder.width(), decoder.height()), (64, 32));
+        let frame = decoder.next_frame().expect("decodes").expect("a frame");
+        assert_eq!((frame.width(), frame.height()), (64, 32));
+        let row: Vec<u8> = frame.pixels()[..64 * 4]
+            .chunks_exact(4)
+            .map(|pixel| pixel[0])
+            .collect();
+        let white = row.iter().filter(|&&level| level > 128).count();
+        assert!(
+            (19..=24).contains(&white),
+            "{white} of 64 columns are white, not a third"
+        );
+    }
+
+    /// A variable-rate recording that holds a still screen has no frame
+    /// for the length of the pause. A seek into it lands on the picture on
+    /// screen there - the last one before the pause - and not on the first
+    /// one after it, seconds early. The fixture is white to 0.3 s, then has
+    /// no frame until black starts at 2 s (#457).
+    #[test]
+    fn a_seek_into_a_still_screen_shows_the_picture_held_there() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/vfr-still-screen.mp4");
+        let brightness = |frame: &Frame| frame.pixels()[0];
+        let at = Rational::from_int(1);
+        let options = DecodeOptions::default().in_software();
+        let mut opened = Decoder::open(path, &options.clone().starting_at(at)).expect("opens");
+        let held = opened.next_frame().expect("decodes").expect("a frame");
+        assert!(
+            brightness(&held) > 200,
+            "the pause shows the white before it"
+        );
+        assert_eq!(opened.position(), Some(Rational::new(8, 30)));
+        let next = opened.next_frame().expect("decodes").expect("a frame");
+        assert!(brightness(&next) < 50, "and the black after it comes next");
+        assert_eq!(opened.position(), Some(Rational::from_int(2)));
+
+        let mut paced = Decoder::open(
+            path,
+            &options.clone().starting_at(at).at_rate(FrameRate::THIRTY),
+        )
+        .expect("opens paced");
+        let frames = drain(&mut paced);
+        assert_eq!(frames.len(), 39, "1 s to 2.3 s at 30 fps");
+        let white = frames
+            .iter()
+            .take_while(|(_, frame)| brightness(frame) > 200);
+        assert_eq!(white.count(), 30, "white until the black starts at 2 s");
+
+        // Past the last frame, the last frame is the one on screen.
+        let mut late =
+            Decoder::open(path, &options.starting_at(Rational::from_int(5))).expect("opens");
+        let last = late.next_frame().expect("decodes").expect("the last frame");
+        assert!(brightness(&last) < 50);
+        assert_eq!(late.position(), Some(Rational::new(68, 30)));
+    }
+
+    /// VLC's stream output leaves an MP4's first picture out of its keyframe
+    /// table, behind an edit list that starts the picture 14 ms in: a seek
+    /// short of the second keyframe, 2 s in here, lands where the caller
+    /// meant instead of failing.
+    #[test]
+    fn a_seek_before_the_second_keyframe_of_a_vlc_mp4_lands() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/vlc-first-picture-not-a-keyframe.mp4"
+        );
+        let mut decoder = Decoder::open(path, &DecodeOptions::default()).expect("opens");
+        decoder.seek(Rational::from_int(1)).expect("seeks");
+        let _ = decoder.next_frame().expect("decodes").expect("a frame");
+        let at = decoder.position().expect("a position").as_f64();
+        assert!(
+            (0.95..1.15).contains(&at),
+            "after a seek to 1 s the frame is at {at}"
+        );
+    }
+
+    /// A WebM alpha layer is a second plane the built-in decoders do not
+    /// read; without it the picture arrives opaque and covers the lanes
+    /// below. Both flavours go through libvpx and keep it. See
+    /// <https://github.com/jub0t/Concat/issues/429>.
+    #[test]
+    fn a_webm_alpha_layer_survives_the_decoder() {
+        for fixture in ["alpha-vp8.webm", "alpha-vp9.webm"] {
+            let path = format!("{}/fixtures/{fixture}", env!("CARGO_MANIFEST_DIR"));
+            let options = DecodeOptions {
+                hardware: HwPolicy::Software,
+                ..DecodeOptions::default()
+            };
+            let mut decoder = Decoder::open(&path, &options).expect("opens");
+            let frame = decoder.next_frame().expect("decodes").expect("a frame");
+            let alphas: Vec<u8> = frame
+                .pixels()
+                .chunks_exact(4)
+                .map(|pixel| pixel[3])
+                .collect();
+            assert!(alphas.contains(&255), "{fixture}: the square is opaque");
+            assert!(
+                alphas.iter().filter(|&&alpha| alpha < 8).count() > alphas.len() / 2,
+                "{fixture}: the ground is clear"
+            );
+        }
     }
 
     #[test]
@@ -1831,12 +2244,80 @@ mod tests {
         assert!(Decoder::open("does-not-exist.mp4", &DecodeOptions::default()).is_err());
     }
 
+    /// An MPEG-TS seek lands on the picture asked for. The container has no
+    /// index, and FFmpeg's search over its timestamps lands past the
+    /// keyframe wanted - here, with the only keyframe at the top, past the
+    /// end of the file - and the stream's first timestamp is 1.4 s in, so
+    /// a seek to its very start found nothing either. A camera's MTS showed
+    /// no picture anywhere in the paused preview, and an MPEG-2 .mpg began
+    /// a group of pictures late (#457).
+    #[test]
+    fn a_transport_stream_seek_lands_on_the_picture_asked_for() {
+        let path = grey_steps_in("transport", "ts");
+        let options = DecodeOptions::default().scaled_to(64, 64).in_software();
+        let walked = drain(&mut Decoder::open(&path, &options).expect("opens"));
+        assert_eq!(walked.len(), 30, "every frame from the top");
+        let mut reused = Decoder::open(&path, &options).expect("opens");
+        for index in [15usize, 27, 0, 1, 15] {
+            let at = Rational::new(index as i64, 30);
+            let mut opened =
+                Decoder::open(&path, &options.clone().starting_at(at)).expect("opens there");
+            reused.seek(at).expect("seeks");
+            for (how, decoder) in [("opened at", &mut opened), ("sought to", &mut reused)] {
+                let landed = decoder
+                    .next_frame()
+                    .expect("decodes")
+                    .unwrap_or_else(|| panic!("{how} frame {index}: no picture"));
+                assert_eq!(decoder.position(), Some(at), "{how} frame {index}");
+                let difference = worst_difference(&walked[index].1, &landed);
+                assert!(
+                    difference <= 2,
+                    "{how} frame {index}: {difference} levels off the picture there"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Matroska stamps frames in whole milliseconds, so most 30 fps frames
+    /// say a fraction of a millisecond past their true instant - 67 ms for
+    /// the one due at 66.7. The paced reader the export draws from still
+    /// gives each output frame its own source frame, not the one before
+    /// (#457).
+    #[test]
+    fn a_paced_read_of_millisecond_stamps_keeps_every_frame_in_its_place() {
+        let path = grey_steps_in("milliseconds", "mkv");
+        let options = DecodeOptions::default().scaled_to(64, 64).in_software();
+        let walked = drain(&mut Decoder::open(&path, &options).expect("opens"));
+        let paced = drain(
+            &mut Decoder::open(&path, &options.clone().at_rate(FrameRate::THIRTY))
+                .expect("opens paced"),
+        );
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(walked.len(), 30, "every frame");
+        assert_eq!(paced.len(), 30, "a frame for every output instant");
+        for (index, ((_, want), (_, got))) in walked.iter().zip(&paced).enumerate() {
+            let difference = worst_difference(want, got);
+            assert!(
+                difference <= 2,
+                "output frame {index} is {difference} levels off source frame {index}"
+            );
+        }
+    }
+
     /// A thirty-frame H.264 file whose every frame is its own flat grey,
     /// for telling frames apart.
     fn grey_steps(name: &str) -> PathBuf {
+        grey_steps_in(name, "mp4")
+    }
+
+    /// [`grey_steps`] in the container `extension` names.
+    fn grey_steps_in(name: &str, extension: &str) -> PathBuf {
         use crate::{EncodeOptions, Encoder, FrameSink};
-        let path =
-            std::env::temp_dir().join(format!("concat-decode-{name}-{}.mp4", std::process::id()));
+        let path = std::env::temp_dir().join(format!(
+            "concat-decode-{name}-{}.{extension}",
+            std::process::id()
+        ));
         let mut encoder = Encoder::create(
             &path,
             64,
