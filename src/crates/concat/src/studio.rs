@@ -3588,8 +3588,9 @@ impl Studio {
                 self.art_pending.insert(id.clone());
                 let id = id.clone();
                 let path = path.clone();
+                let project = project_path.clone();
                 spawn_wave(
-                    move || media_peaks(id, path, duration, None),
+                    move || media_peaks(id, path, project, None),
                     |studio, _, _, art: MediaArt| studio.peaks_landed(art),
                 );
             }
@@ -3604,19 +3605,12 @@ impl Studio {
                 self.art_pending.insert(skey);
                 let project = project_path.clone();
                 spawn_art(
-                    move || media_strip(id, path, kind, duration, project, range),
+                    move || media_strip(id, path, project, range),
                     |studio, _, _, art: MediaArt| {
                         let key = strip_key(&art.id);
                         studio.art_pending.remove(&key);
-                        if art.thumbnail.is_none() && art.strip.is_none() {
+                        if art.strip.is_none() {
                             studio.art_failed.insert(key);
-                        }
-                        if let Some(frame) = art.thumbnail {
-                            studio
-                                .media
-                                .thumbs
-                                .entry(art.id.clone())
-                                .or_insert_with(|| image_of(&frame));
                         }
                         if let Some((frame, frames)) = art.strip {
                             studio.strips.insert(art.id, Strip::of(&frame, frames));
@@ -3625,11 +3619,12 @@ impl Studio {
                 );
             }
         }
-        for (id, path, duration, stream) in extra_streams {
+        for (id, path, _duration, stream) in extra_streams {
             let key = art_key(&id, Some(stream));
             self.art_pending.insert(key);
+            let project = project_path.clone();
             spawn_wave(
-                move || media_peaks(id, path, duration, Some(stream)),
+                move || media_peaks(id, path, project, Some(stream)),
                 |studio, _, _, art: MediaArt| studio.peaks_landed(art),
             );
         }
@@ -8382,6 +8377,7 @@ impl Studio {
             moving: false,
             proxy: false,
             color_space: self.project().active().video.color_space,
+            nearest: false,
         };
         let monitor = self.host.monitor.clone();
         let out_dir = project_dir.join("frames");
