@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "No hay espacio para una transición aquí: ambos clips deben durar al menos un fotograma",
   "studio.notAFont": "{0} no es una fuente que Concat pueda leer",
   "studio.openProject": "Open project…",
+  "studio.openInFileExplorer": "Abrir en el explorador de archivos",
   "studio.parkPlayheadInsideClip": "Coloca el cabezal dentro del clip para cortarlo ahí",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Pegar",

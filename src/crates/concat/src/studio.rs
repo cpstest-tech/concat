@@ -12493,6 +12493,16 @@ impl Studio {
             ));
             rows.push(rule());
         }
+        if let Some(media) = self.project().media_by_id(&clip.media_id) {
+            rows.push(action(
+                "reveal",
+                t("studio.openInFileExplorer"),
+                Glyph::Folder,
+                "",
+                !media.path.is_empty(),
+            ));
+            rows.push(rule());
+        }
         let audible = clip.kind != model::ClipKind::Image;
         rows.push(check(
             "mute",
@@ -12565,6 +12575,12 @@ impl Studio {
         };
         let mut rows = vec![
             action("add", t("studio.addAtPlayhead"), Glyph::Plus, false),
+            action(
+                "reveal",
+                t("studio.openInFileExplorer"),
+                Glyph::Folder,
+                false,
+            ),
             rule(),
         ];
         if item.kind != model::MediaKind::Audio {
@@ -12608,6 +12624,13 @@ impl Studio {
         };
         match action {
             "add" => self.place_at_playhead(&format!("media:{row}")),
+            "reveal" => {
+                if let Some(item) = self.project().media_by_id(id) {
+                    if let Err(error) = platform::reveal(&item.path) {
+                        self.notify(&error, true);
+                    }
+                }
+            }
             "remove" => self.handle(crate::panes::Msg::Media(
                 crate::panes::media_bin::MediaMsg::Remove(row),
             )),
@@ -13258,6 +13281,13 @@ impl Studio {
                 self.apply(Command::ReattachAudio {
                     clip_id: id.to_owned(),
                 });
+            }
+            "reveal" => {
+                if let Some(media) = self.project().media_by_id(&clip.media_id) {
+                    if let Err(error) = platform::reveal(&media.path) {
+                        self.notify(&error, true);
+                    }
+                }
             }
             "mute" => {
                 let volume = if clip.volume <= 0.0 { 1.0 } else { 0.0 };
@@ -14015,5 +14045,28 @@ mod tests {
                 "one undo puts {id} back"
             );
         }
+    }
+
+    #[test]
+    fn menu_height_includes_reveal_action() {
+        use super::{Glyph, MenuItemData, MenuRow, Studio};
+        let rows = vec![
+            MenuItemData {
+                id: "add".into(),
+                kind: MenuRow::Action,
+                ..Default::default()
+            },
+            MenuItemData {
+                id: "reveal".into(),
+                kind: MenuRow::Action,
+                glyph: Glyph::Folder,
+                ..Default::default()
+            },
+            MenuItemData {
+                kind: MenuRow::Separator,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(Studio::menu_height(&rows), 73.0);
     }
 }

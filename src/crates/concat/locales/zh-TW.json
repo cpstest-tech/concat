@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "這裡沒有放轉場的空間：兩個片段都至少需要一格長",
   "studio.notAFont": "{0} 不是 Concat 能讀取的字型",
   "studio.openProject": "打開專案…",
+  "studio.openInFileExplorer": "在檔案總管中開啟",
   "studio.parkPlayheadInsideClip": "請將播放磁頭放在片段內，才能在該處切開",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "貼上",

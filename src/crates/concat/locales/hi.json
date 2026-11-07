@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "यहां ट्रांज़िशन के लिए जगह नहीं है: दोनों क्लिप कम से कम एक फ़्रेम लंबी होनी चाहिए",
   "studio.notAFont": "{0} ऐसा फ़ॉन्ट नहीं है जिसे Concat पढ़ सके",
   "studio.openProject": "प्रोजेक्ट खोलें…",
+  "studio.openInFileExplorer": "फ़ाइल एक्सप्लोरर में खोलें",
   "studio.parkPlayheadInsideClip": "क्लिप को वहीं काटने के लिए प्लेहेड को उसके अंदर रखें",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "चिपकाएं",

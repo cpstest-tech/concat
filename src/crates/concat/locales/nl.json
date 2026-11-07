@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Hier is geen ruimte voor een overgang: beide clips moeten minstens één frame lang zijn",
   "studio.notAFont": "{0} is geen lettertype dat Concat kan lezen",
   "studio.openProject": "Project openen…",
+  "studio.openInFileExplorer": "Openen in Verkenner",
   "studio.parkPlayheadInsideClip": "Zet de afspeelkop in de clip om hem daar te knippen",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Plakken",

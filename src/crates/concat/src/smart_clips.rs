@@ -195,7 +195,7 @@ pub fn generate_smart_clips(
     formatted: &FormattedTranscript,
     config: &SmartClipsConfig,
 ) -> Result<GeminiSmartClipsResponse, String> {
-    let api_key = api_key.trim();
+    let api_key = api_key.trim().trim_matches('"').trim_matches('\'');
     if api_key.is_empty() {
         return Err("Chiave API di Google Gemini non configurata. Inseriscila nelle impostazioni o nella variabile d'ambiente GEMINI_API_KEY.".to_owned());
     }
@@ -325,15 +325,21 @@ pub fn generate_smart_clips(
     };
 
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     );
 
     let body_bytes = serde_json::to_vec(&request_body)
         .map_err(|e| format!("Impossibile serializzare la richiesta JSON: {e}"))?;
 
-    let response = ureq::post(&url)
-        .timeout(Duration::from_secs(45))
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(20))
+        .timeout_read(Duration::from_secs(120))
+        .build();
+
+    let response = agent
+        .post(&url)
         .set("Content-Type", "application/json")
+        .set("x-goog-api-key", api_key)
         .send_bytes(&body_bytes);
 
     let response = match response {
@@ -342,6 +348,14 @@ pub fn generate_smart_clips(
             let error_text = resp
                 .into_string()
                 .unwrap_or_else(|_| "Risposta d'errore illeggibile".to_owned());
+
+            // Extract Google's structured error message if available
+            if let Ok(json_err) = serde_json::from_str::<serde_json::Value>(&error_text) {
+                if let Some(msg) = json_err.pointer("/error/message").and_then(|v| v.as_str()) {
+                    return Err(format!("Errore API Gemini (HTTP {code}): {msg}"));
+                }
+            }
+
             return Err(format!("Errore API Gemini (HTTP {code}): {error_text}"));
         }
         Err(ureq::Error::Transport(err)) => {

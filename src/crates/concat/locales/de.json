@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Hier ist kein Platz für einen Übergang: beide Clips müssen mindestens ein Bild lang sein",
   "studio.notAFont": "{0} ist keine Schrift, die Concat lesen kann",
   "studio.openProject": "Open project…",
+  "studio.openInFileExplorer": "Im Datei-Explorer öffnen",
   "studio.parkPlayheadInsideClip": "Setze den Abspielkopf in den Clip, um ihn dort zu schneiden",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Einfügen",

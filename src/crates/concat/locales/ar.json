@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "لا يوجد متّسع لانتقال هنا: يجب ألا يقل طول كل مقطع عن إطار واحد",
   "studio.notAFont": "{0} ليس خطًا يستطيع Concat قراءته",
   "studio.openProject": "فتح مشروع…",
+  "studio.openInFileExplorer": "فتح في مستعرض الملفات",
   "studio.parkPlayheadInsideClip": "ضع مؤشر التشغيل داخل المقطع لقصّه هناك",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "لصق",

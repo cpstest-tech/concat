@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Тут немає місця для переходу: обидва кліпи мають бути завдовжки щонайменше один кадр",
   "studio.notAFont": "{0} — не шрифт, який може прочитати Concat",
   "studio.openProject": "Відкрити проєкт…",
+  "studio.openInFileExplorer": "Відкрити у провіднику",
   "studio.parkPlayheadInsideClip": "Поставте курсор відтворення всередину кліпу, щоб розрізати його там",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Вставити",

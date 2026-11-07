@@ -767,6 +767,7 @@
   "studio.noRoomForTransition": "Burada keçid üçün yer yoxdur: hər iki klip ən azı bir kadr uzunluğunda olmalıdır",
   "studio.notAFont": "{0} Concat-ın oxuya biləcəyi şrift deyil",
   "studio.openProject": "Layihə aç…",
+  "studio.openInFileExplorer": "Fayl menecerində aç",
   "studio.parkPlayheadInsideClip": "Klipi kəsmək üçün oynatma göstəricisini onun içinə qoyun",
   "studio.parkPlayheadToFreeze": "Dondurmaq üçün oynatma göstəricisini şəkil və ya video klipin içinə qoyun",
   "studio.paste": "Yapışdır",

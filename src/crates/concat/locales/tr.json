@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Burada geçiş için yer yok: her iki klip de en az bir kare uzunluğunda olmalı",
   "studio.notAFont": "{0}, Concat’ın okuyabildiği bir yazı tipi değil",
   "studio.openProject": "Open project…",
+  "studio.openInFileExplorer": "Dosya gezgininde aç",
   "studio.parkPlayheadInsideClip": "Klibi orada kesmek için oynatma imlecini klibin içine getirin",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Yapıştır",

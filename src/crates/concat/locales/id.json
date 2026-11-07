@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Tidak ada ruang untuk transisi di sini: kedua klip harus sepanjang minimal satu bingkai",
   "studio.notAFont": "{0} bukan font yang dapat dibaca Concat",
   "studio.openProject": "Buka proyek…",
+  "studio.openInFileExplorer": "Buka di penjelajah file",
   "studio.parkPlayheadInsideClip": "Letakkan penanda putar di dalam klip untuk memotongnya di titik itu",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Tempel",

@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "ไม่มีที่ว่างสำหรับทรานซิชันตรงนี้: ทั้งสองคลิปต้องยาวอย่างน้อยหนึ่งเฟรม",
   "studio.notAFont": "{0} ไม่ใช่ฟอนต์ที่ Concat อ่านได้",
   "studio.openProject": "เปิดโปรเจกต์…",
+  "studio.openInFileExplorer": "เปิดในตัวจัดการไฟล์",
   "studio.parkPlayheadInsideClip": "วางหัวเล่นไว้ภายในคลิปเพื่อตัดตรงนั้น",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "วาง",

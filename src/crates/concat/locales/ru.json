@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Здесь нет места для перехода: оба клипа должны длиться не меньше кадра",
   "studio.notAFont": "{0} — не шрифт, который Concat может прочитать",
   "studio.openProject": "Открыть проект…",
+  "studio.openInFileExplorer": "Открыть в проводнике",
   "studio.parkPlayheadInsideClip": "Поставьте курсор внутрь клипа, чтобы разрезать его там",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Вставить",

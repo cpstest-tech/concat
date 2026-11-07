@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Nie ma tu miejsca na przejście: oba klipy muszą mieć co najmniej jedną klatkę długości",
   "studio.notAFont": "{0} nie jest czcionką, którą Concat potrafi odczytać",
   "studio.openProject": "Otwórz projekt…",
+  "studio.openInFileExplorer": "Otwórz w Eksploratorze plików",
   "studio.parkPlayheadInsideClip": "Ustaw głowicę wewnątrz klipu, aby go tam przeciąć",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Wklej",

@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "אין כאן מקום למעבר: שני הקליפים צריכים להיות באורך פריים אחד לפחות",
   "studio.notAFont": "{0} אינו גופן ש-Concat יכול לקרוא",
   "studio.openProject": "פתיחת פרויקט…",
+  "studio.openInFileExplorer": "פתח בסייר הקבצים",
   "studio.parkPlayheadInsideClip": "יש למקם את סמן ההפעלה בתוך הקליפ כדי לחתוך אותו שם",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "הדבקה",

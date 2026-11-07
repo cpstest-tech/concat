@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Không đủ chỗ cho chuyển cảnh: cả hai clip phải dài ít nhất một khung hình",
   "studio.notAFont": "{0} không phải phông chữ mà Concat có thể đọc",
   "studio.openProject": "Mở dự án…",
+  "studio.openInFileExplorer": "Mở trong trình khám phá tệp",
   "studio.parkPlayheadInsideClip": "Đặt đầu phát vào trong clip để cắt tại vị trí đó",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Dán",

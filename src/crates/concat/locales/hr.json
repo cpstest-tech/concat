@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Ovdje nema mjesta za prijelaz: oba isječka moraju trajati barem jednu sličicu",
   "studio.notAFont": "{0} nije font koji Concat može pročitati",
   "studio.openProject": "Open project…",
+  "studio.openInFileExplorer": "Otvori u pregledniku datoteka",
   "studio.parkPlayheadInsideClip": "Postavi playhead unutar klipa da bi ga ondje izrezao",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Zalijepi",

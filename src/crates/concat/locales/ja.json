@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "ここにはトランジションを入れる余地がありません。両方のクリップが少なくとも 1フレーム必要です",
   "studio.notAFont": "{0} は Concat が読み込めるフォントではありません",
   "studio.openProject": "プロジェクトを開く…",
+  "studio.openInFileExplorer": "ファイルエクスプローラーで開く",
   "studio.parkPlayheadInsideClip": "その位置で切るには、再生ヘッドをクリップ内に置いてください",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "ペースト",

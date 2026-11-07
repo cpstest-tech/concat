@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "یہاں ٹرانزیشن کی جگہ نہیں: دونوں کلپس کم از کم ایک فریم لمبے ہونے چاہییں",
   "studio.notAFont": "{0} ایسا فونٹ نہیں جو Concat پڑھ سکے",
   "studio.openProject": "پروجیکٹ کھولیں…",
+  "studio.openInFileExplorer": "فائل ایکسپلورر میں کھولیں",
   "studio.parkPlayheadInsideClip": "کلپ کو وہاں سے کاٹنے کے لیے پلے ہیڈ کو اس کے اندر رکھیں",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "پیسٹ کریں",

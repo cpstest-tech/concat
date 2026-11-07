@@ -768,6 +768,7 @@
   "studio.noRoomForTransition": "Pas de place pour une transition ici : les deux clips doivent durer au moins une image",
   "studio.notAFont": "{0} n’est pas une police que Concat sait lire",
   "studio.openProject": "Open project…",
+  "studio.openInFileExplorer": "Ouvrir dans l'explorateur de fichiers",
   "studio.parkPlayheadInsideClip": "Placez la tête de lecture dans le clip pour le couper à cet endroit",
   "studio.parkPlayheadToFreeze": "Park the playhead inside a picture clip to freeze",
   "studio.paste": "Coller",
