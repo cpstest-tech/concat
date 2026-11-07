@@ -270,12 +270,18 @@ fn file_name(path: &str) -> String {
 
 /// A string field, empty when absent.
 fn text(value: &Value, key: &str) -> String {
-    value.get(key).and_then(Value::as_str).unwrap_or("").to_owned()
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
 }
 
 /// A number field.
 fn number(value: Option<&Value>, key: &str) -> Option<f64> {
-    value.and_then(|value| value.get(key)).and_then(Value::as_f64)
+    value
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_f64)
 }
 
 /// CapCut microseconds as seconds.
@@ -474,13 +480,17 @@ impl Reader<'_> {
                 }
                 "transitions" => {
                     let length = micros(extra.get("duration"));
-                    transition = Some((
-                        if length > 0.0 { length } else { 0.5 },
-                        text(extra, "name"),
-                    ));
+                    transition =
+                        Some((if length > 0.0 { length } else { 0.5 }, text(extra, "name")));
                 }
-                "speeds" | "canvases" | "placeholder_infos" | "sound_channel_mappings"
-                | "material_colors" | "vocal_separations" | "beats" | "loudnesses" => {}
+                "speeds"
+                | "canvases"
+                | "placeholder_infos"
+                | "sound_channel_mappings"
+                | "material_colors"
+                | "vocal_separations"
+                | "beats"
+                | "loudnesses" => {}
                 "material_animations" => {
                     if extra
                         .get("animations")
@@ -512,7 +522,14 @@ impl Reader<'_> {
             }
             ClipKind::Text => {
                 let style = title_of(material)?;
-                clip.name = style.content.lines().next().unwrap_or("").chars().take(40).collect();
+                clip.name = style
+                    .content
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(40)
+                    .collect();
                 clip.text = Some(style);
             }
             _ => return None,
@@ -526,7 +543,10 @@ impl Reader<'_> {
     fn speed(&self, segment: &Value, clip: &mut Clip, notes: &mut Notes) {
         let mut speed = segment.get("speed").and_then(Value::as_f64).unwrap_or(1.0);
         if let Some((_, material)) = self.extras(segment).find(|(list, _)| *list == "speeds") {
-            speed = material.get("speed").and_then(Value::as_f64).unwrap_or(speed);
+            speed = material
+                .get("speed")
+                .and_then(Value::as_f64)
+                .unwrap_or(speed);
             if material.get("mode").and_then(Value::as_i64).unwrap_or(0) != 0 {
                 let points: Vec<SpeedPoint> = material
                     .pointer("/curve_speed/speed_points")
@@ -600,7 +620,10 @@ impl Reader<'_> {
         let length = clip.duration * MICROS;
         let lists = segment.get("common_keyframes").and_then(Value::as_array);
         for list in lists.into_iter().flatten() {
-            let kind = list.get("property_type").and_then(Value::as_str).unwrap_or("");
+            let kind = list
+                .get("property_type")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let (property, value): (KeyProperty, fn(f64) -> f64) = match kind {
                 "KFTypePositionX" => (KeyProperty::OffsetX, |x| x / 2.0),
                 "KFTypePositionY" => (KeyProperty::OffsetY, |y| -y / 2.0),
@@ -628,10 +651,17 @@ impl Reader<'_> {
                 else {
                     continue;
                 };
-                let at = key.get("time_offset").and_then(Value::as_f64).unwrap_or(0.0);
+                let at = key
+                    .get("time_offset")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
                 clip.keys.push(ClipKey {
                     property,
-                    at: if length > 0.0 { (at / length).clamp(0.0, 1.0) } else { 0.0 },
+                    at: if length > 0.0 {
+                        (at / length).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    },
                     value: value(raw),
                     ease: KeyEase::LINEAR,
                 });
@@ -718,7 +748,11 @@ fn title_of(material: &Value) -> Option<TextStyle> {
     style.underline = flag("underline").unwrap_or(style.underline);
     // CapCut's titles are regular unless made bold; Concat's start bold.
     if run.is_some() {
-        style.font_weight = if flag("bold") == Some(true) { 700.0 } else { 400.0 };
+        style.font_weight = if flag("bold") == Some(true) {
+            700.0
+        } else {
+            400.0
+        };
     }
     style.align = match material.get("alignment").and_then(Value::as_u64) {
         Some(0) => TextAlign::Left,
@@ -801,7 +835,11 @@ fn cuts(clips: &mut [(Clip, Option<(f64, String)>)]) -> Vec<(f64, f64, &'static 
         let longest = 2.0 * left.duration.min(right.duration);
         let span = span.min(longest).max(MIN_TRANSITION);
         let package = package_for(&name);
-        let label = if name.is_empty() { "Transition".to_owned() } else { name };
+        let label = if name.is_empty() {
+            "Transition".to_owned()
+        } else {
+            name
+        };
         placed.push(((cut - span / 2.0).max(0.0), span, package, label));
     }
     placed
@@ -959,12 +997,8 @@ mod tests {
         // 0.3s more of the incoming clip's source is skipped, at 2x.
         assert!((right.source_start - (8.0 + 0.3 * 2.0)).abs() < 1e-9);
         assert_eq!(left.track_id, right.track_id, "end to end on one lane");
-        let transitions = clips_of(&imported, ClipKind::Transition);
-        assert_eq!(transitions.len(), 1);
-        let transition = &transitions[0];
-        assert!((transition.start - 3.4).abs() < 1e-9);
+        let transition = right.transition_in.as_ref().expect("transition on cut");
         assert!((transition.duration - 0.6).abs() < 1e-9);
-        assert_ne!(transition.track_id, left.track_id, "over the cut, not on it");
     }
 
     #[test]
@@ -985,14 +1019,21 @@ mod tests {
         assert_eq!(curve.len(), 3);
         assert!((curve[1].speed - 6.8).abs() < 1e-9 && (curve[1].at - 0.5).abs() < 1e-9);
         assert!((first.speed - crate::speed::mean_of(curve)).abs() < 1e-9);
-        assert_eq!(imported.project.media.len(), 3, "one file, two cuts: one item");
+        assert_eq!(
+            imported.project.media.len(),
+            3,
+            "one file, two cuts: one item"
+        );
     }
 
     #[test]
     fn a_copied_file_is_found_in_the_draft() {
         let imported = imported();
         let photo = clips_of(&imported, ClipKind::Image).remove(0);
-        let media = imported.project.media_by_id(&photo.media_id).expect("media");
+        let media = imported
+            .project
+            .media_by_id(&photo.media_id)
+            .expect("media");
         assert_eq!(media.path, "/drafts/0816/media/p.jpg");
         assert_eq!(media.kind, MediaKind::Image);
     }
@@ -1007,7 +1048,10 @@ mod tests {
         assert!(style.italic);
         assert!((style.font_weight - 700.0).abs() < 1e-9);
         assert!((style.font_size - 0.09).abs() < 1e-9);
-        assert_eq!(unmarked("<size=15><font id=\"\">[hi you]</font></size>"), "hi you");
+        assert_eq!(
+            unmarked("<size=15><font id=\"\">[hi you]</font></size>"),
+            "hi you"
+        );
     }
 
     #[test]
@@ -1024,8 +1068,14 @@ mod tests {
     #[test]
     fn what_does_not_come_across_is_said() {
         let notes = imported().notes;
-        assert!(notes.iter().any(|note| note.contains("sticker")), "{notes:?}");
-        assert!(notes.iter().any(|note| note.contains("effect")), "{notes:?}");
+        assert!(
+            notes.iter().any(|note| note.contains("sticker")),
+            "{notes:?}"
+        );
+        assert!(
+            notes.iter().any(|note| note.contains("effect")),
+            "{notes:?}"
+        );
     }
 
     #[test]

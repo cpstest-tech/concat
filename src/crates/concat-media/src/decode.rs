@@ -798,8 +798,11 @@ impl Decoder {
             }
             (None, Some(device)) => {
                 let lease = if options.hardware == HwPolicy::Preference {
-                    let bytes =
-                        hardware::surfaces_bytes(coded.0.max(0) as u32, coded.1.max(0) as u32, format);
+                    let bytes = hardware::surfaces_bytes(
+                        coded.0.max(0) as u32,
+                        coded.1.max(0) as u32,
+                        format,
+                    );
                     hardware::SurfaceLease::take(bytes)
                 } else {
                     Some(hardware::SurfaceLease::unbudgeted())
@@ -942,13 +945,11 @@ impl Decoder {
         let (accelerated, named) = match codec {
             Codec::Software => (None, None),
             Codec::On(device, lease) => (
-                device
-                    .attach(&mut context)
-                    .map(|format| OnChip::Accel {
-                        device: device.kind(),
-                        format,
-                        _lease: lease,
-                    }),
+                device.attach(&mut context).map(|format| OnChip::Accel {
+                    device: device.kind(),
+                    format,
+                    _lease: lease,
+                }),
                 None,
             ),
             Codec::Named(name) => {
@@ -1355,11 +1356,7 @@ impl Decoder {
                     Ok(copy) => copy,
                     Err(error) => {
                         hardware::mark_failed(&self.path);
-                        hardware::note_fallback(
-                            device,
-                            "copy a frame back",
-                            &error.to_string(),
-                        );
+                        hardware::note_fallback(device, "copy a frame back", &error.to_string());
                         self.resume_in_software(pts, false)?;
                         continue;
                     }
@@ -1507,16 +1504,12 @@ impl Decoder {
                 && let Some(last) = self.current.as_mut()
             {
                 self.position = last.pts;
-                if stateless_graph
-                    && let Some(converted) = last.converted.as_ref()
-                {
+                if stateless_graph && let Some(converted) = last.converted.as_ref() {
                     return Ok(Some(converted.share()));
                 }
                 let frame = share(&last.frame);
                 let converted = self.convert(&frame)?;
-                if stateless_graph
-                    && let Some(last) = self.current.as_mut()
-                {
+                if stateless_graph && let Some(last) = self.current.as_mut() {
                     last.converted = Some(converted.share());
                 }
                 return Ok(Some(converted));
@@ -1602,9 +1595,7 @@ impl Decoder {
         }
         let frame = share(&self.current.as_ref().expect("checked").frame);
         let converted = self.convert(&frame)?;
-        if stateless_graph
-            && let Some(current) = self.current.as_mut()
-        {
+        if stateless_graph && let Some(current) = self.current.as_mut() {
             current.converted = Some(converted.share());
         }
         Ok(Some(converted))

@@ -1173,7 +1173,10 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
     editor.on_clip_volume(on_lanes!(|state, id: SharedString, gain: f32| {
         state.clip_volume(&id, gain);
     }));
-    editor.on_clip_fade(on_lanes!(|state, id: SharedString, out: bool, seconds: f32| {
+    editor.on_clip_fade(on_lanes!(|state,
+                                   id: SharedString,
+                                   out: bool,
+                                   seconds: f32| {
         state.clip_fade(&id, out, seconds);
     }));
     editor.on_save_frame(on_window!(|state| {

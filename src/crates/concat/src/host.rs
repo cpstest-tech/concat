@@ -236,10 +236,7 @@ fn spawn_on_frame_worker(work: impl FnOnce() + Send + 'static) {
     );
     static WORKER: std::sync::OnceLock<Arc<Slot>> = std::sync::OnceLock::new();
     let slot = WORKER.get_or_init(|| {
-        let pair: Arc<Slot> = Arc::new((
-            std::sync::Mutex::new(None),
-            std::sync::Condvar::new(),
-        ));
+        let pair: Arc<Slot> = Arc::new((std::sync::Mutex::new(None), std::sync::Condvar::new()));
         let worker = Arc::clone(&pair);
         std::thread::Builder::new()
             .name("concat-monitor".into())
@@ -247,9 +244,8 @@ fn spawn_on_frame_worker(work: impl FnOnce() + Send + 'static) {
                 let (lock, cvar) = &*worker;
                 loop {
                     let job = {
-                        let mut guard = lock
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let mut guard =
+                            lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                         while guard.is_none() {
                             guard = cvar
                                 .wait(guard)
@@ -266,9 +262,7 @@ fn spawn_on_frame_worker(work: impl FnOnce() + Send + 'static) {
         pair
     });
     let (lock, cvar) = &**slot;
-    *lock
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(work));
+    *lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Box::new(work));
     cvar.notify_one();
 }
 

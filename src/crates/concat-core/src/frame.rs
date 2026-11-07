@@ -454,7 +454,11 @@ impl Yuv420 {
                     }
                 };
                 let (y, cb, cr) = if self.layout.full_range {
-                    (y_raw / 255.0, (cb_raw - 128.0) / 255.0, (cr_raw - 128.0) / 255.0)
+                    (
+                        y_raw / 255.0,
+                        (cb_raw - 128.0) / 255.0,
+                        (cr_raw - 128.0) / 255.0,
+                    )
                 } else {
                     (
                         (y_raw - 16.0) / 219.0,

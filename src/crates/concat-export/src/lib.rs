@@ -672,7 +672,11 @@ fn resolve_transitions_at(
 
     // Clips on one track in the order they start, so each cut's incoming
     // clip sits after its outgoing one and the chain's step is one index.
-    clips.sort_by(|a, b| a.track.cmp(&b.track).then_with(|| a.start.total_cmp(&b.start)));
+    clips.sort_by(|a, b| {
+        a.track
+            .cmp(&b.track)
+            .then_with(|| a.start.total_cmp(&b.start))
+    });
 
     let mut cuts: Vec<Cut> = Vec::new();
     for (incoming, clip) in clips.iter().enumerate() {
@@ -890,7 +894,10 @@ fn lane_spacing(cuts: &[Cut]) -> usize {
         let entry = step.entry(cut.incoming).or_insert(0);
         *entry = (*entry).max(next);
     }
-    step.values().copied().max().map_or(2, |most| (most + 1).max(2))
+    step.values()
+        .copied()
+        .max()
+        .map_or(2, |most| (most + 1).max(2))
 }
 
 /// What [`overlap`] built a transition on.
@@ -3107,7 +3114,7 @@ mod tests {
         };
         let out = composite_treated(
             &mut compositor,
-            stack(Rational::from_int(1)),
+            &stack(Rational::from_int(1)),
             std::slice::from_ref(&mono),
             &[],
         );
@@ -3125,7 +3132,7 @@ mod tests {
             strength: 0.5,
             ..mono.clone()
         };
-        let out = composite_treated(&mut compositor, stack(Rational::from_int(1)), &[half], &[]);
+        let out = composite_treated(&mut compositor, &stack(Rational::from_int(1)), &[half], &[]);
         let pixel = at_of(&out, 7, 7);
         assert!(
             pixel[0] > pixel[1] + 60 && pixel[1] > grey[1] / 4 && pixel[0] < 255,
@@ -3133,7 +3140,7 @@ mod tests {
         );
 
         // Outside its span the treatment does nothing.
-        let out = composite_treated(&mut compositor, stack(Rational::from_int(20)), &[mono], &[]);
+        let out = composite_treated(&mut compositor, &stack(Rational::from_int(20)), &[mono], &[]);
         assert_eq!(at_of(&out, 7, 7), [255, 0, 0]);
         fn at_of(frame: &Frame, x: usize, y: usize) -> [u8; 3] {
             let p = &frame.pixels()[(y * 8 + x) * 4..(y * 8 + x) * 4 + 3];
@@ -3195,10 +3202,10 @@ mod tests {
         let Some(mut gpu) = WgpuCompositor::new() else {
             return; // no renderer here
         };
-        let pushed = composite_treated(&mut gpu, plan(), &[], std::slice::from_ref(&span));
+        let pushed = composite_treated(&mut gpu, &plan(), &[], std::slice::from_ref(&span));
         let graded = composite_treated(
             &mut gpu,
-            plan(),
+            &plan(),
             std::slice::from_ref(&mono),
             std::slice::from_ref(&span),
         );
@@ -3886,13 +3893,14 @@ mod tests {
     /// the export with a message that says how many there were.
     #[test]
     fn an_export_gives_up_after_enough_device_losses() {
-        let Err(error) = recovered(DEVICE_LOSSES, false) else {
+        let Err(error) = recovered(DEVICE_LOSSES, false, None) else {
             panic!("a third loss gives up");
         };
         assert!(error.contains("lost 3 times"), "{error}");
         assert!(error.contains("not answering"), "{error}");
         if WgpuCompositor::new().is_some() {
-            let fresh = recovered(1, true).expect("a machine that draws opens another device");
+            let fresh =
+                recovered(1, true, None).expect("a machine that draws opens another device");
             assert!(!fresh.lost());
         }
     }

@@ -3595,10 +3595,7 @@ impl Studio {
                         studio.art_pending.remove(&key);
                         match poster.thumbnail {
                             Some(frame) => {
-                                studio
-                                    .media
-                                    .thumbs
-                                    .insert(poster.id, image_of(&frame));
+                                studio.media.thumbs.insert(poster.id, image_of(&frame));
                             }
                             None => {
                                 studio.art_failed.insert(key);
@@ -9899,7 +9896,10 @@ impl Studio {
                 && graded(clip.kind)
             {
                 let inside = self.key_point().map(|(_, at)| at);
-                sync(&models.adjust_params, adjust_rows(&clip.video_effects, inside));
+                sync(
+                    &models.adjust_params,
+                    adjust_rows(&clip.video_effects, inside),
+                );
                 if let Some(package) = Catalogue::builtin().get(ADJUST_ID) {
                     let (adjust_wheels, _) = grading_rows(
                         package,
@@ -12150,10 +12150,7 @@ impl Studio {
                 .map(|model| SharedString::from(model.name.as_str()))
                 .collect(),
         );
-        sync(
-            &models.caption_languages,
-            self.captions.language_rows(self),
-        );
+        sync(&models.caption_languages, self.captions.language_rows(self));
         app.set_captions(self.captions.data(self));
         let voices = installed(&self.settings.voices);
         sync(

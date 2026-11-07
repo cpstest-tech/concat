@@ -518,8 +518,7 @@ fn on_speech(start: f64, end: f64, speech: &[(f64, f64)]) -> (f64, f64) {
 /// transcription models the first time it is wanted.
 fn vad_model(dirs: &AppDirs) -> Result<PathBuf, String> {
     let path = models_dir(dirs)?.join("ggml-silero-v6.2.0.bin");
-    let whole = std::fs::metadata(&path)
-        .is_ok_and(|meta| meta.len() == VAD_MODEL.len() as u64);
+    let whole = std::fs::metadata(&path).is_ok_and(|meta| meta.len() == VAD_MODEL.len() as u64);
     if !whole {
         let part = path.with_extension("part");
         std::fs::write(&part, VAD_MODEL)
@@ -1204,7 +1203,9 @@ fn detect_language(
         if sum.is_empty() {
             sum = odds;
         } else {
-            sum.iter_mut().zip(odds).for_each(|(sum, odds)| *sum += odds);
+            sum.iter_mut()
+                .zip(odds)
+                .for_each(|(sum, odds)| *sum += odds);
         }
         probes += 1;
     }
@@ -1224,8 +1225,12 @@ fn detect_language(
         name(ranked[2].0),
         ranked[2].1,
     );
-    whisper_rs::get_lang_str(ranked[0].0)
-        .ok_or_else(|| format!("whisper heard language {}, which it cannot name", ranked[0].0))
+    whisper_rs::get_lang_str(ranked[0].0).ok_or_else(|| {
+        format!(
+            "whisper heard language {}, which it cannot name",
+            ranked[0].0
+        )
+    })
 }
 
 /// A line whisper made up of silence: one from a window it took for
@@ -1369,7 +1374,10 @@ mod tests {
             )
             .expect("transcribes");
         for segment in segments {
-            println!("{:7.2} {:7.2}  {}", segment.start, segment.end, segment.text);
+            println!(
+                "{:7.2} {:7.2}  {}",
+                segment.start, segment.end, segment.text
+            );
         }
     }
 

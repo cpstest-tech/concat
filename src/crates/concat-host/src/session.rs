@@ -334,15 +334,8 @@ mod tests {
             std::env::temp_dir().join(format!("concat-session-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         std::fs::create_dir_all(&scratch).expect("scratch dir");
-        let info = projects::create(
-            &scratch.to_string_lossy(),
-            "Fresh",
-            1920,
-            1080,
-            30,
-            1,
-        )
-        .expect("creates");
+        let info = projects::create(&scratch.to_string_lossy(), "Fresh", 1920, 1080, 30, 1)
+            .expect("creates");
 
         let mut session = Session::open_info(&info).expect("opens the settings-only manifest");
         assert!(!session.can_undo());

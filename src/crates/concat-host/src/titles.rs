@@ -676,7 +676,7 @@ fn read_block(side: &Path, text: &str, width: u32, height: u32) -> Option<Art> {
             .and_then(|v| v.as_u64())
             .map_or(frame, |v| v as u32)
     };
-        let canvas = (side_of("cw", width), side_of("ch", height));
+    let canvas = (side_of("cw", width), side_of("ch", height));
     Some(Art {
         block: (
             value.get("w")?.as_u64()? as u32,
@@ -1129,7 +1129,11 @@ mod tests {
         assert_eq!(cold[0].clip.media_width, clip.media_width);
         assert_eq!(cold[0].clip.overscan, clip.overscan);
         assert_eq!(
-            cold[0].clip.reveal_map.as_ref().map(|r| (r.width, r.height)),
+            cold[0]
+                .clip
+                .reveal_map
+                .as_ref()
+                .map(|r| (r.width, r.height)),
             Some((canvas_w, canvas_h))
         );
         let live = titles.clips_live(editor.project(), 640, 360);
