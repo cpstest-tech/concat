@@ -4286,7 +4286,12 @@ impl Studio {
 
     /// A new timeline takes its frame from the first video or still dropped
     /// onto it, as editors commonly do. Later media keeps the chosen frame.
-    fn first_visual_frame(&self, media_id: &str) -> Option<(String, model::VideoSettings)> {
+    /// If the media is high framerate (120+ fps), the timeline framerate is
+    /// capped to 60 fps to ensure smooth playback, and the original fps is returned.
+    fn first_visual_frame(
+        &self,
+        media_id: &str,
+    ) -> Option<(String, model::VideoSettings, Option<f64>)> {
         let timeline = self.timeline();
         if !timeline.clips.is_empty() {
             return None;
@@ -4317,7 +4322,29 @@ impl Studio {
                 Some((num.parse().ok()?, den.parse().ok()?))
             })
             .filter(|(num, den): &(i64, i64)| *num > 0 && *den > 0)
-            .unwrap_or((current.rate_num, current.rate_den));
+            .unwrap_or_else(|| {
+                if let Some(fps) = media.frame_rate.filter(|&fps| fps > 0.0) {
+                    (fps.round() as i64, 1)
+                } else {
+                    (current.rate_num, current.rate_den)
+                }
+            });
+
+        let source_fps = media
+            .frame_rate
+            .unwrap_or_else(|| rate_num as f64 / rate_den.max(1) as f64);
+        let (rate_num, rate_den, capped_from) = if source_fps >= 100.0 {
+            let (target_num, target_den) = if rate_den == 1001 || (source_fps - 119.88).abs() < 0.2
+            {
+                (60000, 1001)
+            } else {
+                (60, 1)
+            };
+            (target_num, target_den, Some(source_fps))
+        } else {
+            (rate_num, rate_den, None)
+        };
+
         Some((
             timeline_id,
             model::VideoSettings {
@@ -4327,6 +4354,7 @@ impl Studio {
                 rate_den,
                 ..current
             },
+            capped_from,
         ))
     }
 
@@ -4334,15 +4362,28 @@ impl Studio {
     /// step. The regular command path is unchanged for later clips.
     fn apply_with_first_frame(
         &mut self,
-        frame: Option<(String, model::VideoSettings)>,
+        frame: Option<(String, model::VideoSettings, Option<f64>)>,
         command: Command,
     ) -> Option<String> {
-        match frame {
+        let (frame_setting, capped) = match frame {
+            Some((timeline_id, video, capped)) => (Some((timeline_id, video)), capped),
+            None => (None, None),
+        };
+        let result = match frame_setting {
             Some((timeline_id, video)) => self.apply(Command::Batch {
                 commands: vec![Command::SetTimelineVideo { timeline_id, video }, command],
             }),
             None => self.apply(command),
+        };
+        if let Some(fps) = capped {
+            let label = if (fps - fps.round()).abs() < 0.05 {
+                format!("{:.0}", fps)
+            } else {
+                format!("{:.2}", fps)
+            };
+            self.notify(&tf("studio.timelineFpsCapped", &[&label]), false);
         }
+        result
     }
 
     /// A card clicked rather than dragged: the playhead names the moment

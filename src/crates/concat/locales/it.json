@@ -807,6 +807,7 @@
   "studio.stereo": "stereo",
   "studio.textToSpeech": "Sintesi vocale…",
   "studio.timelineNowHdr": "{0} ora è HDR (HLG), per la sua prima clip HDR. Da Modifica puoi tornare indietro.",
+  "studio.timelineFpsCapped": "Timeline impostata a 60 fps per una riproduzione fluida (sorgente a {0} fps).",
   "studio.track": "Track {0}",
   "studio.undo": "Annulla",
   "studio.upgradedEffects": "Alcuni effetti di questo progetto si aprono come quelli che li sostituiscono: {0}. Salva per mantenere la modifica.",
