@@ -20,7 +20,7 @@ In questo ambiente il build del profilo `release` aveva fallito durante il link 
 
 ```sh
 cd /home/paolo/ConCat-Edit/concat/src
-ORT_LIB_LOCATION=/home/paolo/.local/share/onnxruntime/onnxruntime-linux-x64-1.28.0/lib \
+ORT_LIB_LOCATION=/usr/lib \
 ORT_PREFER_DYNAMIC_LINK=1 \
 cargo build -p concat --profile quick -j 2
 ```
@@ -115,3 +115,16 @@ Queste directory sono fuori dal checkout: l'installazione richiede permessi appr
 - **Creazione automatica nuova traccia trascinando su righello/numeri o poco sopra**: `DropArea` in `lanes.slint` e l'area di drop su `TimelineTray` intercettano i drag posizionati sul righello o poco sopra (`y < ruler-height + 12px` o sulla barra strumenti timeline). Viene attivato `is_new_track = true`. L'interfaccia mostra un'anteprima visiva con corsia dedicata evidenziata `+ Nuova traccia` e ghost del clip con badge "+ Nuova traccia: {nome}". Riportando il cursore verso il basso l'anteprima si toglie all'istante tornando alla traccia ordinaria. Rilasciando in alto viene creata una traccia in cima e piazzato/spostato il clip; rilasciando su una traccia esistente viene posizionato lì senza creare tracce indesiderate (rimosso il vecchio automatismo che creava tracce sulle collisioni ordinarie).
 - **Drag & drop dal file manager direttamente sulla timeline**: Collegato il monitoraggio del cursore e degli eventi OS (`HoveredFile`, `CursorMoved`, `DroppedFile` in `DropHandler` e listener Wayland). Durante l'hover del file dal gestore file viene calcolata la posizione esatta sulla timeline tramite `Studio::timeline_drop_target`, mostrando il ghost preview del clip (e l'anteprima nuova traccia se vicino al righello). Al rilascio, il file viene aggiunto ai media e inserito istantaneamente come clip sulla timeline nella posizione e traccia esatte (o su nuova traccia in cima se rilasciato sul righello).
 - **Layout di esportazione e apertura video nel programma**: `Measure` espanso a `max: 1800px` con layout responsive. Durante il rendering viene mostrato un player live widescreen ad alta risoluzione (640px) affiancato al pannello di avanzamento. A fine export viene presentata la schermata "Il video è pronto" con pulsante principale "Apri" (carica e avvia la riproduzione del file esportato direttamente nell'editor), "Apri con lettore esterno" e "Mostra nella cartella".
+
+### 9. Upstream Merge 0.2.9 & Miglioramenti Architetturali (Novembre 2026)
+- **Allineamento Upstream Completo**: Completato e verificato l'intero processo di merge da upstream `0.2.9` sul branch `paolo/custom-workflow`, mantenendo integra l'architettura personalizzata (tracce magnetiche, transizioni sul taglio `clip.transition_in`, decode Venturi zero-stall, animazioni word-reveal/pop e anteprima export responsive).
+- **Importazione bozze CapCut**: Supporto nativo per importare direttamente dalla schermata iniziale i progetti CapCut (`Draft`), traducendo tracce, clip, media e transizioni direttamente sul modello timeline `clip.transition_in`.
+- **Silero VAD v6.2.0 & Captions Language Picker**: Integrazione del modello Silero VAD v6.2.0 (`concat-speech`) per segmentazione vocale accurata prima di Whisper; correzione gap timestamp post-pause; aggiunta del menu a discesa per la selezione lingua nei sottotitoli mantenendo l'opzione "Intera timeline" e le animazioni pop parola per parola.
+- **Strumenti Timeline Rapidi**:
+  - Pulsante forbici "quick-split" fluttuante sulla playhead sopra la clip selezionata.
+  - Maniglie interattive fade-in e fade-out audio sugli angoli superiori di ogni clip sulla timeline con feedback visivo.
+  - Barra delle tab timeline scorrevole orizzontalmente con pulsante `+` fisso per timeline multiple.
+  - Navigazione rapida tra i tagli con Freccia Su / Freccia Giù (`SelectPreviousCut` / `SelectNextCut`).
+  - Nuovi preset di aspect ratio `4:5` (Instagram/Facebook) e `3:4`.
+- **GPU Upscaler & Pipeline di Render**: Real-ESRGAN basato su compute shader WGSL nativo (`concat-vision`); hardware H.264 encode con failover automatico su software (`libx264`/`libx265`); conversione YUV GPU zero-copy e recovery dinamico in caso di GPU device loss.
+- **Robustezza Configurazione**: Salvataggio atomico di `settings.json` con parser resiliente che ripara JSON corrotti o parziali senza azzerare le preferenze dell'utente.
