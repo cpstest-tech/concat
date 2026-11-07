@@ -296,8 +296,12 @@ const WORK_FALLBACK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 pub const DEVICE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// When the device's allocator (`gpu-allocator`) starts warning about and
-/// refusing allocations against the adapter's memory budget: 85 % and 95 %
+/// refusing allocations against the adapter's memory budget: 95 % and 99 %
 /// of what the OS leaves the process.
+///
+/// Applied on Windows (Direct3D 12); disabled on Linux Vulkan where
+/// `VK_EXT_memory_budget` reports small budgets on host-visible heaps that
+/// desktop compositors already overcommit, leading to false OOM rejections (#424).
 pub const MEMORY_BUDGET: wgpu::MemoryBudgetThresholds = wgpu::MemoryBudgetThresholds {
     for_resource_creation: Some(95),
     for_device_loss: Some(99),
@@ -976,12 +980,13 @@ impl WgpuCompositor {
     /// software - or software alone - or `None` when none of them opens a
     /// device.
     fn on_backends(backends: wgpu::Backends, software_only: bool) -> Option<Self> {
-        let budget = if std::env::var("CONCAT_TEST").is_ok()
-            || std::env::var("CARGO_MANIFEST_DIR").is_ok()
+        let budget = if (cfg!(windows) || std::env::var("CONCAT_MEMORY_BUDGET").is_ok())
+            && std::env::var("CONCAT_TEST").is_err()
+            && std::env::var("CARGO_MANIFEST_DIR").is_err()
         {
-            Default::default()
-        } else {
             MEMORY_BUDGET
+        } else {
+            Default::default()
         };
         let mut descriptor = wgpu::InstanceDescriptor {
             backends,

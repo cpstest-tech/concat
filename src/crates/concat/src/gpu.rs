@@ -55,9 +55,14 @@ impl Gpu {
         } else {
             wgpu::Backends::VULKAN
         };
+        let memory_budget = if cfg!(windows) || std::env::var("CONCAT_MEMORY_BUDGET").is_ok() {
+            concat_render::gpu::MEMORY_BUDGET
+        } else {
+            Default::default()
+        };
         let mut descriptor = wgpu::InstanceDescriptor {
             backends,
-            memory_budget_thresholds: concat_render::gpu::MEMORY_BUDGET,
+            memory_budget_thresholds: memory_budget,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         };
         // FXC, never wgpu's default `Auto`: Concat ships no dxcompiler.dll,
