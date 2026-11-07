@@ -1,0 +1,458 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// SPDX-FileCopyrightText: 2026 Jareer and Concat contributors
+
+import { I18n } from "../i18n.slint";
+import { Theme } from "../theme/theme.slint";
+import { Glyph, Icon } from "../icons.slint";
+import { Button, DialogRow, DialogSection, Modal, Progress } from "../primitives/modal.slint";
+import { SegmentedControl } from "../primitives/segmented-control.slint";
+import { Select } from "../primitives/select.slint";
+
+export struct SmartClipData {
+    index: int,
+    title: string,
+    virality-score: int,
+    editorial-reason: string,
+    duration-seconds: float,
+    duration-formatted: string,
+    segment-count: int,
+}
+
+export struct SmartClipsSheetData {
+    open: bool,
+    sources: [string],
+    source: int,
+    duration-preset: int,
+    max-clips-preset: int,
+    model-preset: int,
+    custom-model: string,
+    custom-directions: string,
+    api-key: string,
+    running: bool,
+    stage: string,
+    progress: float,
+    message: string,
+    has-results: bool,
+    clips: [SmartClipData],
+}
+
+component ScoreBadge inherits Rectangle {
+    in property <int> score;
+    border-radius: 12px;
+    background: root.score >= 80 ? #10b98133 : (root.score >= 60 ? #f59e0b33 : #ef444433);
+    border-width: 1px;
+    border-color: root.score >= 80 ? #10b981 : (root.score >= 60 ? #f59e0b : #ef4444);
+    height: 22px;
+    horizontal-stretch: 0;
+
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 4px;
+        alignment: center;
+
+        Icon {
+            glyph: Glyph.sparkle;
+            size: 11px;
+            tint: root.score >= 80 ? #10b981 : (root.score >= 60 ? #f59e0b : #ef4444);
+        }
+
+        Text {
+            text: "\{root.score}/100";
+            font-size: Theme.fs;
+            font-weight: 700;
+            color: root.score >= 80 ? #10b981 : (root.score >= 60 ? #f59e0b : #ef4444);
+            vertical-alignment: center;
+        }
+    }
+}
+
+component SmartClipCard inherits Rectangle {
+    in property <SmartClipData> card-data;
+    callback add-to-timeline();
+
+    border-radius: Theme.r;
+    background: Theme.well;
+    border-width: 1px;
+    border-color: Theme.line;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: space-between;
+
+            Text {
+                text: root.card-data.title;
+                font-size: Theme.fs-xl;
+                font-weight: 700;
+                color: Theme.fg;
+                horizontal-stretch: 1;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            ScoreBadge {
+                score: root.card-data.virality-score;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+
+            Text {
+                text: "⏱ " + root.card-data.duration-formatted;
+                font-size: Theme.fs;
+                color: Theme.accent;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+
+            if root.card-data.segment-count > 1: Text {
+                text: "✂ " + "\{root.card-data.segment-count} tagli (Multi-Cut)";
+                font-size: Theme.fs;
+                color: Theme.fg-muted;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.card-data.editorial-reason;
+            font-size: Theme.fs;
+            color: Theme.fg-muted;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            padding-top: 4px;
+
+            Button {
+                label: "Aggiungi in Timeline";
+                glyph: Glyph.plus;
+                primary: true;
+                clicked => { root.add-to-timeline(); }
+            }
+        }
+    }
+}
+
+export component SmartClipsDialog inherits Modal {
+    in property <SmartClipsSheetData> data;
+
+    callback source-changed(index: int);
+    callback duration-preset-changed(index: int);
+    callback max-clips-preset-changed(index: int);
+    callback model-preset-changed(index: int);
+    callback custom-model-edited(text: string);
+    callback custom-directions-edited(text: string);
+    callback api-key-edited(text: string);
+    callback begin-analysis();
+    callback cancel();
+    callback add-clip-to-timeline(index: int);
+    callback insert-all-clips();
+    callback reset-analysis();
+
+    open: root.data.open;
+    title: "Auto-Highlight / Smart Clips (AI)";
+    glyph: Glyph.sparkle;
+    surface-width: 540px;
+    surface-height: root.data.has-results ? 680px : 0px;
+    dismissable: !root.data.running;
+
+    VerticalLayout {
+        spacing: 14px;
+
+        // Configuration View (when not running and no results yet)
+        if !root.data.running && !root.data.has-results: VerticalLayout {
+            spacing: 12px;
+
+            DialogSection {
+                first: true;
+                title: "Origine Video & Audio";
+
+                DialogRow {
+                    label: "Clip Sorgente";
+                    Select {
+                        options: root.data.sources;
+                        current: root.data.source;
+                        placeholder: "Nessun audio trovato nella timeline";
+                        enabled: root.data.sources.length > 0;
+                        changed(index) => { root.source-changed(index); }
+                    }
+                }
+            }
+
+            DialogSection {
+                title: "Parametri AI Generativa";
+
+                DialogRow {
+                    label: "Durata Target";
+                    SegmentedControl {
+                        options: ["< 30s", "30s - 60s", "60s - 90s"];
+                        current: root.data.duration-preset;
+                        changed(index) => { root.duration-preset-changed(index); }
+                    }
+                }
+
+                DialogRow {
+                    label: "Numero Clip";
+                    SegmentedControl {
+                        options: ["3 clip", "5 clip", "10 clip"];
+                        current: root.data.max-clips-preset;
+                        changed(index) => { root.max-clips-preset-changed(index); }
+                    }
+                }
+            }
+
+            DialogSection {
+                title: "Direzioni e Momenti Specifici (Opzionale)";
+
+                Rectangle {
+                    height: 58px;
+                    border-radius: Theme.r;
+                    background: Theme.well;
+                    border-width: 1px;
+                    border-color: directions-input.has-focus ? Theme.accent : Theme.line;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+
+                        directions-input := TextInput {
+                            text: root.data.custom-directions;
+                            font-size: Theme.fs;
+                            color: Theme.fg;
+                            wrap: word-wrap;
+                            edited => { root.custom-directions-edited(self.text); }
+                        }
+                    }
+                }
+
+                Text {
+                    text: "Es: 'trova i momenti più divertenti', 'quando parla di pricing', 'la demo del codice'...";
+                    font-size: Theme.fs-xs;
+                    color: Theme.fg-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            DialogSection {
+                title: "Configurazione Gemini";
+
+                DialogRow {
+                    label: "Modello AI";
+                    Select {
+                        options: [
+                            "gemini-3.8-flash (Consigliato)",
+                            "gemini-3.5-flash-lite (Veloce)",
+                            "Personalizzato..."
+                        ];
+                        details: [
+                            "Gratis $0 (1M)",
+                            "Gratis $0 (1M)",
+                            "Custom ID"
+                        ];
+                        current: root.data.model-preset;
+                        changed(index) => { root.model-preset-changed(index); }
+                    }
+                }
+
+                if root.data.model-preset == 2: DialogRow {
+                    label: "Model ID Custom";
+                    Rectangle {
+                        height: 32px;
+                        border-radius: Theme.r;
+                        background: Theme.well;
+                        border-width: 1px;
+                        border-color: custom-model-input.has-focus ? Theme.accent : Theme.line;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+
+                            custom-model-input := TextInput {
+                                text: root.data.custom-model;
+                                font-size: Theme.fs;
+                                color: Theme.fg;
+                                vertical-alignment: center;
+                                edited => { root.custom-model-edited(self.text); }
+                            }
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.data.model-preset == 0
+                        ? "gemini-3.8-flash: scelta principale con 1M token di contesto, ideale per selezione clip e JSON strutturato ($0 Free Tier)."
+                        : (root.data.model-preset == 1
+                            ? "gemini-3.5-flash-lite: fallback rapido per video lunghi o quando esaurisci le quote giornaliere ($0 Free Tier)."
+                            : "Inserisci l'identificativo esatto del modello Gemini Google AI Studio.");
+                    font-size: Theme.fs-xs;
+                    color: Theme.fg-muted;
+                    wrap: word-wrap;
+                }
+
+                DialogRow {
+                    label: "Gemini API Key";
+                    Rectangle {
+                        height: 32px;
+                        border-radius: Theme.r;
+                        background: Theme.well;
+                        border-width: 1px;
+                        border-color: api-input.has-focus ? Theme.accent : Theme.line;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+
+                            api-input := TextInput {
+                                text: root.data.api-key;
+                                font-size: Theme.fs;
+                                color: Theme.fg;
+                                vertical-alignment: center;
+                                edited => { root.api-key-edited(self.text); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.data.message != "": Rectangle {
+                border-radius: Theme.r;
+                background: #ef444422;
+                border-width: 1px;
+                border-color: #ef4444;
+
+                HorizontalLayout {
+                    padding: 10px;
+                    Text {
+                        text: root.data.message;
+                        color: #ef4444;
+                        font-size: Theme.fs;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                padding-top: 8px;
+
+                Button {
+                    label: "Estrai Momenti Salienti (AI)";
+                    glyph: Glyph.sparkle;
+                    primary: true;
+                    clicked => { root.begin-analysis(); }
+                }
+            }
+        }
+
+        // Loading / Progress View
+        if root.data.running: DialogSection {
+            first: true;
+            title: "Analisi Smart Clips in corso...";
+
+            VerticalLayout {
+                spacing: 12px;
+                padding-top: 10px;
+                padding-bottom: 10px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+
+                    Text {
+                        text: root.data.stage != "" ? root.data.stage : "Elaborazione in corso...";
+                        color: Theme.fg;
+                        font-size: Theme.fs-xl;
+                        font-weight: 600;
+                    }
+
+                    Text {
+                        text: "\{Math.floor(bar.shown * 100)}%";
+                        color: Theme.accent;
+                        font-family: Theme.font-technical;
+                        font-size: Theme.fs;
+                        vertical-alignment: center;
+                    }
+                }
+
+                bar := Progress {
+                    value: root.data.progress;
+                    ceiling: 1.0;
+                    step: 2s;
+                    live: true;
+                }
+
+                Text {
+                    text: "ConCat trascrive l'audio ed esamina l'andamento narrativo con Gemini per trovare i migliori Hook e momenti virali.";
+                    color: Theme.fg-muted;
+                    font-size: Theme.fs;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    alignment: start;
+                    padding-top: 8px;
+
+                    Button {
+                        label: I18n.t("common.cancel");
+                        clicked => { root.cancel(); }
+                    }
+                }
+            }
+        }
+
+        // Results View (when clips have been found)
+        if !root.data.running && root.data.has-results: VerticalLayout {
+            spacing: 12px;
+
+            HorizontalLayout {
+                alignment: space-between;
+
+                Text {
+                    text: "\{root.data.clips.length} clip virali estratte con successo";
+                    font-size: Theme.fs-xl;
+                    font-weight: 700;
+                    color: Theme.fg;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    Button {
+                        label: "Nuova analisi";
+                        clicked => { root.reset-analysis(); }
+                    }
+
+                    Button {
+                        label: "Inserisci tutte in coda";
+                        glyph: Glyph.plus;
+                        primary: true;
+                        clicked => { root.insert-all-clips(); }
+                    }
+                }
+            }
+
+            Flickable {
+                height: 480px;
+                content-height: list-layout.preferred-height;
+
+                list-layout := VerticalLayout {
+                    spacing: 10px;
+                    padding-right: 6px;
+
+                    for clip[idx] in root.data.clips: SmartClipCard {
+                        card-data: clip;
+                        add-to-timeline => { root.add-clip-to-timeline(clip.index); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -84,6 +84,7 @@ export component TimelinePane inherits Rectangle {
     callback delete-selected();
     callback captions();
     callback speak();
+    callback smart-clips();
     callback record-voiceover();
     callback add-track(bottom: bool);
     callback zoom-to-fit(width: length);
@@ -375,6 +376,7 @@ export component TimelinePane inherits Rectangle {
                 delete-selected => { root.delete-selected(); }
                 captions => { root.captions(); }
                 speak => { root.speak(); }
+                smart-clips => { root.smart-clips(); }
                 record-voiceover => { root.record-voiceover(); }
                 add-track(bottom) => { root.add-track(bottom); }
                 fit => { root.zoom-to-fit(lanes.width); }

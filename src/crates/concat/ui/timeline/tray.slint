@@ -207,6 +207,7 @@ export component TimelineTray inherits Rectangle {
     callback delete-selected();
     callback captions();
     callback speak();
+    callback smart-clips();
     callback record-voiceover();
     /// Add a lane: on top of the stack, or with `bottom` under it.
     callback add-track(bottom: bool);
@@ -407,6 +408,13 @@ export component TimelineTray inherits Rectangle {
             icon-size: 16px;
             checked: Editor.speech-open;
             clicked => { root.speak(); }
+        }
+        TrayButton {
+            glyph: Glyph.sparkle;
+            label: "Auto-Highlight / Smart Clips (AI)";
+            icon-size: 16px;
+            checked: Editor.smart-clips-open;
+            clicked => { root.smart-clips(); }
         }
         // A voiceover: the picture rolls from the playhead and the words go
         // onto a lane under it. The same button stops the take.

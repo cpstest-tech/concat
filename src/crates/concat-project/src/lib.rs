@@ -5656,4 +5656,44 @@ mod tests {
             crate::delete_to_playhead(timeline, &gone, 5.0, PlayheadSide::Left, false).is_none()
         );
     }
+
+    #[test]
+    fn add_clip_span_places_precise_subsegment() {
+        let (mut editor, _, _) = fixture();
+        let Command::AddMedia { item } = media("/video.mp4", 60.0, true) else {
+            unreachable!()
+        };
+        let media_id = editor
+            .apply(Command::AddMedia { item })
+            .expect("imports")
+            .created_id
+            .expect("id");
+        let track_id = editor
+            .apply(Command::AddTrack { bottom: false })
+            .expect("track")
+            .created_id
+            .expect("id");
+        let clip_id = editor
+            .apply(Command::AddClipSpan {
+                media_id,
+                track_id,
+                start: 5.0,
+                source_start: 12.5,
+                duration: 8.0,
+                name: Some("Highlight 1".to_string()),
+                ripple: false,
+            })
+            .expect("places")
+            .created_id
+            .expect("a clip");
+        let clip = editor
+            .project()
+            .active()
+            .clip(&clip_id)
+            .expect("clip found");
+        assert_eq!(clip.start, 5.0);
+        assert_eq!(clip.source_start, 12.5);
+        assert_eq!(clip.duration, 8.0);
+        assert_eq!(clip.name, "Highlight 1");
+    }
 }

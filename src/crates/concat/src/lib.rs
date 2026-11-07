@@ -61,6 +61,7 @@ pub use platform::{MicrophoneAccess, install_microphone_access};
 mod panes;
 mod prefs;
 mod presets;
+pub mod smart_clips;
 mod source;
 mod speed_ramp;
 mod studio;
@@ -101,6 +102,7 @@ use panes::monitor::MonitorMsg;
 use panes::project::ProjectMsg;
 use panes::relink::RelinkMsg;
 use panes::settings::SettingsMsg;
+use panes::smart_clips::SmartClipsMsg;
 use panes::sounds::SoundsMsg;
 use panes::speech::SpeechMsg;
 use panes::start::StartMsg;
@@ -2177,6 +2179,60 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             SpeechMsg::Open
         };
         state.handle(Msg::Speech(msg));
+    }));
+    editor.on_smart_clips(on_window!(|state| {
+        let msg = if state.smart_clips.open {
+            SmartClipsMsg::Close
+        } else {
+            SmartClipsMsg::Open
+        };
+        state.handle(Msg::SmartClips(msg));
+    }));
+
+    app.on_smart_clips_closed(on_window!(|state| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::Close));
+    }));
+    app.on_smart_clips_source_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::SourceChanged(index)));
+    }));
+    app.on_smart_clips_duration_preset_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::DurationPresetChanged(index)));
+    }));
+    app.on_smart_clips_max_clips_preset_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::MaxClipsPresetChanged(index)));
+    }));
+    app.on_smart_clips_model_preset_changed(on_window!(|state, index: i32| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::ModelPresetChanged(index)));
+    }));
+    app.on_smart_clips_custom_model_edited(on_window!(|state, text: SharedString| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::CustomModelEdited(
+            text.to_string(),
+        )));
+    }));
+    app.on_smart_clips_custom_directions_edited(on_window!(|state, text: SharedString| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::CustomDirectionsEdited(
+            text.to_string(),
+        )));
+    }));
+    app.on_smart_clips_api_key_edited(on_window!(|state, text: SharedString| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::ApiKeyEdited(
+            text.to_string(),
+        )));
+    }));
+    app.on_smart_clips_begin(on_window!(|state| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::BeginAnalysis));
+    }));
+    app.on_smart_clips_cancel(on_window!(|state| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::Cancel));
+    }));
+    app.on_smart_clips_add_clip(on_window!(|state, index: i32| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::AddClipToTimeline(index)));
+    }));
+    app.on_smart_clips_insert_all(on_window!(|state| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::InsertAllClips));
+    }));
+    app.on_smart_clips_reset(on_window!(|state| {
+        state.handle(Msg::SmartClips(SmartClipsMsg::ResetAnalysis));
     }));
 
     app.on_captions_closed(on_window!(|state| {

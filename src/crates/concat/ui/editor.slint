@@ -397,6 +397,7 @@ export global Editor {
     /// of the clip's own menu - see `clip-context`.
     callback captions();
     callback speak();
+    callback smart-clips();
     /// The tray's record button: opens the voiceover panel, closes it, or
     /// stops the take it is running.
     callback record-voiceover();
@@ -405,6 +406,7 @@ export global Editor {
     /// Which of the tray's panels are up, so their buttons read as on.
     in-out property <bool> captions-open;
     in-out property <bool> speech-open;
+    in-out property <bool> smart-clips-open;
     in-out property <bool> voiceover-open;
     /// The microphone while the voiceover panel is open, as positions
     /// along a meter, `0..1`: the peak (beside the tray's button too) and

@@ -46,6 +46,46 @@ pub(super) fn apply(
             })
         }
 
+        Command::AddClipSpan {
+            media_id,
+            track_id,
+            start,
+            source_start,
+            duration,
+            name,
+            ripple,
+        } => {
+            let media = project
+                .media_by_id(&media_id)
+                .ok_or(CommandError::MediaGone)?
+                .clone();
+            let timeline = project.active_mut();
+            if timeline.track(&track_id).is_none() {
+                return Err(CommandError::TrackGone);
+            }
+            let duration = duration.max(MIN_CLIP_DURATION);
+            let start = if ripple {
+                ripple_room_for(timeline, &track_id, start, &media)
+            } else {
+                timeline.nearest_free_start(&track_id, start, duration, &[])
+            };
+            let kind = match media.kind {
+                MediaKind::Video => ClipKind::Video,
+                MediaKind::Audio => ClipKind::Audio,
+                MediaKind::Image => ClipKind::Image,
+            };
+            let clip_name = name.unwrap_or_else(|| media.name.clone());
+            let id = mint.next("c");
+            let mut clip = Clip::blank(id.clone(), track_id, kind, clip_name, start, duration);
+            clip.media_id = media.id.clone();
+            clip.source_start = source_start.max(0.0);
+            timeline.clips.push(Arc::new(clip));
+            Ok(Outcome {
+                created_id: Some(id),
+                applied: true,
+            })
+        }
+
         Command::AddClipAtFirstFree { media_id, start } => {
             let media = project
                 .media_by_id(&media_id)

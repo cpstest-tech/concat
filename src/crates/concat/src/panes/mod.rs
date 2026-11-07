@@ -23,6 +23,7 @@ pub mod pace;
 pub mod project;
 pub mod relink;
 pub mod settings;
+pub mod smart_clips;
 pub mod sounds;
 pub mod speech;
 pub mod start;
@@ -56,6 +57,8 @@ pub enum Msg {
     Voiceover(voiceover::VoiceoverMsg),
     /// To the library's Audio page.
     Sounds(sounds::SoundsMsg),
+    /// To the smart clips / auto-highlight dialog.
+    SmartClips(smart_clips::SmartClipsMsg),
 }
 
 /// What a message says in the log: the activity trail of what the person
@@ -87,6 +90,7 @@ pub fn activity(msg: &Msg) -> Option<Activity> {
         | Msg::Export(ExportMsg::Progress { .. })
         | Msg::Captions(CaptionsMsg::Progress(_))
         | Msg::Speech(SpeechMsg::Progress(_))
+        | Msg::SmartClips(smart_clips::SmartClipsMsg::TranscriptionProgress(..))
         | Msg::Settings(SettingsMsg::ModelProgress { .. } | SettingsMsg::InstallProgress { .. }) => {
             return None;
         }

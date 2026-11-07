@@ -1053,6 +1053,7 @@ pub struct Studio {
     pub project_sheet: crate::panes::project::ProjectPane,
     pub captions: crate::panes::captions::CaptionsPane,
     pub speech: crate::panes::speech::SpeechPane,
+    pub smart_clips: crate::panes::smart_clips::SmartClipsPane,
     /// The library's Audio page: the user's own sounds.
     pub sounds: crate::panes::sounds::SoundsPane,
     /// A file from the library lent the monitor and the speakers; see
@@ -2449,6 +2450,7 @@ impl Studio {
             project_sheet: crate::panes::project::ProjectPane::default(),
             captions: crate::panes::captions::CaptionsPane::default(),
             speech: crate::panes::speech::SpeechPane::with_saved(&host.dirs),
+            smart_clips: crate::panes::smart_clips::SmartClipsPane::default(),
             sounds: crate::panes::sounds::SoundsPane::open(&host.dirs),
             source: None,
             meters: crate::meters::MeterFeed::default(),
@@ -9466,6 +9468,11 @@ impl Studio {
                 pane.update(msg, self);
                 self.speech = pane;
             }
+            crate::panes::Msg::SmartClips(msg) => {
+                let mut pane = std::mem::take(&mut self.smart_clips);
+                pane.update(msg, self);
+                self.smart_clips = pane;
+            }
             crate::panes::Msg::Voiceover(msg) => {
                 let mut pane = std::mem::take(&mut self.voiceover);
                 pane.update(msg, self);
@@ -12243,9 +12250,11 @@ impl Studio {
         self.publish_source(app);
         sync(&models.voiceover_devices, self.voiceover.device_rows());
         app.set_voiceover(self.voiceover.data(self));
+        app.set_smart_clips(self.smart_clips.data(self));
         editor.set_recording(self.voiceover.recording());
         editor.set_captions_open(self.captions.open);
         editor.set_speech_open(self.speech.open);
+        editor.set_smart_clips_open(self.smart_clips.open);
         editor.set_voiceover_open(self.voiceover.is_open());
 
         let bar = self.menu_bar();

@@ -28,6 +28,7 @@ import { ProjectDialog, ProjectSheetData } from "dialogs/project.slint";
 import { RelinkDialog, RelinkData, MissingMediaItem } from "dialogs/relink.slint";
 import { ConfirmData, ConfirmDialog } from "dialogs/confirm.slint";
 import { CaptionRowData, CaptionsDialog, CaptionsSheetData } from "dialogs/captions.slint";
+import { SmartClipData, SmartClipsDialog, SmartClipsSheetData } from "dialogs/smart-clips.slint";
 import { SpeechDialog, SpeechSheetData } from "dialogs/speech.slint";
 import { AvatarData } from "primitives/avatar.slint";
 import { VoiceoverData, VoiceoverPanel } from "dialogs/voiceover.slint";
@@ -68,7 +69,7 @@ export {
     SelectedClipData, SelectedTransitionData, StageGuideData, StageItemData, TextAlignment, TimelineTabData,
     TimelineTool, TrackData, TrackSize, MenuItemData, MenuRow, ExportData, ExportPhase, ModelData, SettingsData,
     ChipOption, RecentProjectData, StartData, SystemFactData, ToastData, ProjectSheetData,
-    CaptionRowData, CaptionsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
+    CaptionRowData, CaptionsSheetData, SmartClipData, SmartClipsSheetData, SpeechSheetData, VoiceoverData, SoundCardData, Sounds, VoiceCardData,
 }
 
 export component App inherits Window {
@@ -319,6 +320,7 @@ export component App inherits Window {
     /// words - or any words - read aloud. Their option lists come from what
     /// is installed, so they are handed over as models.
     in property <CaptionsSheetData> captions;
+    in property <SmartClipsSheetData> smart-clips;
     in property <[string]> caption-models;
     in property <[string]> caption-languages;
     callback captions-closed();
@@ -337,6 +339,20 @@ export component App inherits Window {
     callback captions-edit();
     callback captions-editor-closed();
     callback captions-edit-row(id: string, text: string, start: string, end: string);
+
+    callback smart-clips-closed();
+    callback smart-clips-source-changed(index: int);
+    callback smart-clips-duration-preset-changed(index: int);
+    callback smart-clips-max-clips-preset-changed(index: int);
+    callback smart-clips-model-preset-changed(index: int);
+    callback smart-clips-custom-model-edited(text: string);
+    callback smart-clips-custom-directions-edited(text: string);
+    callback smart-clips-api-key-edited(text: string);
+    callback smart-clips-begin();
+    callback smart-clips-cancel();
+    callback smart-clips-add-clip(index: int);
+    callback smart-clips-insert-all();
+    callback smart-clips-reset();
 
     in property <SpeechSheetData> speech;
     in property <[string]> speech-models;
@@ -771,6 +787,36 @@ export component App inherits Window {
             pick-picture => { root.speech-pick-picture(); }
             save-voice => { root.speech-save-voice(); }
             clear-style => { root.speech-clear-style(); }
+        }
+
+        SmartClipsDialog {
+            fill: root.sheets-fill;
+            floating: !root.sheets-fill;
+            z: root.front-tool == "smart-clips" ? 1 : 0;
+            raised => { root.front-tool = "smart-clips"; }
+            inset-top: root.safe-area-insets.top;
+            inset-bottom: root.safe-area-insets.bottom;
+            inset-left: root.safe-area-insets.left;
+            inset-right: root.safe-area-insets.right;
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            data: root.smart-clips;
+
+            closed => { root.smart-clips-closed(); }
+            source-changed(index) => { root.smart-clips-source-changed(index); }
+            duration-preset-changed(index) => { root.smart-clips-duration-preset-changed(index); }
+            max-clips-preset-changed(index) => { root.smart-clips-max-clips-preset-changed(index); }
+            model-preset-changed(index) => { root.smart-clips-model-preset-changed(index); }
+            custom-model-edited(text) => { root.smart-clips-custom-model-edited(text); }
+            custom-directions-edited(text) => { root.smart-clips-custom-directions-edited(text); }
+            api-key-edited(text) => { root.smart-clips-api-key-edited(text); }
+            begin-analysis => { root.smart-clips-begin(); }
+            cancel => { root.smart-clips-cancel(); }
+            add-clip-to-timeline(index) => { root.smart-clips-add-clip(index); }
+            insert-all-clips => { root.smart-clips-insert-all(); }
+            reset-analysis => { root.smart-clips-reset(); }
         }
     }
 

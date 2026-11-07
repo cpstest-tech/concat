@@ -329,6 +329,25 @@ pub enum Command {
         #[serde(default)]
         ripple: bool,
     },
+    /// Places a cut of `media_id` on a named track with explicit source window and duration.
+    AddClipSpan {
+        /// The bin item to cut from.
+        media_id: String,
+        /// The lane to place it on.
+        track_id: String,
+        /// Timeline position in seconds, floored at 0.
+        start: f64,
+        /// In-point into the media file in seconds.
+        source_start: f64,
+        /// Timeline duration in seconds.
+        duration: f64,
+        /// Display label, or None to use the media's name.
+        #[serde(default)]
+        name: Option<String>,
+        /// When true, ripples later clips.
+        #[serde(default)]
+        ripple: bool,
+    },
     /// [`Command::AddClip`] without naming a lane: lands on the lowest
     /// track with nothing in the clip's span, falling back to the bottom
     /// track (overlap and all) rather than refusing.
@@ -1088,6 +1107,12 @@ impl Command {
             Command::AddClip { start, .. }
             | Command::AddClipAtFirstFree { start, .. }
             | Command::AddClipsInSequence { start, .. } => bad([*start]),
+            Command::AddClipSpan {
+                start,
+                source_start,
+                duration,
+                ..
+            } => bad([*start, *source_start, *duration]),
             Command::AddShapeClip {
                 start,
                 duration,
@@ -1284,6 +1309,7 @@ pub fn apply(
         | Command::UpdateMediaPath { .. }
         | Command::SetMediaColorRange { .. }) => media::apply(project, mint, command),
         command @ (Command::AddClip { .. }
+        | Command::AddClipSpan { .. }
         | Command::AddClipAtFirstFree { .. }
         | Command::AddClipsInSequence { .. }
         | Command::AddTextClip { .. }

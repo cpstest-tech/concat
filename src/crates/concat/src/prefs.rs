@@ -50,6 +50,12 @@ pub struct Preferences {
     /// whisper's code ("id", "de", ...). `None` is whisper's to hear, and
     /// so is a code whisper no longer knows.
     pub caption_language: Option<String>,
+    /// The Gemini API key for AI features (Auto-Highlight / Smart Clips).
+    pub gemini_api_key: Option<String>,
+    /// The Gemini model id (e.g. "gemini-3.8-flash", "gemini-3.5-flash-lite").
+    pub gemini_model: Option<String>,
+    /// Custom Gemini model ID if chosen.
+    pub gemini_custom_model: Option<String>,
     /// The chosen speech model id.
     pub tts_model: Option<String>,
     /// The chosen Kokoro speaker id.
