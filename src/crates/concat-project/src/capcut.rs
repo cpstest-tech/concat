@@ -161,6 +161,7 @@ pub fn import(draft: &Draft) -> Result<Imported, CapcutError> {
         project.active_timeline_id = id;
         // Each through the cut transition model on the second clip.
         for (start, duration, package, _name) in transitions {
+            let cut = start + duration / 2.0;
             if let Some(timeline) = project
                 .timelines
                 .iter_mut()
@@ -170,7 +171,7 @@ pub fn import(draft: &Draft) -> Result<Imported, CapcutError> {
                 if let Some(clip) = timeline
                     .clips
                     .iter_mut()
-                    .find(|c| (c.start - start).abs() < 0.05)
+                    .find(|c| (c.start - cut).abs() < 0.05)
                 {
                     let clip = Arc::make_mut(clip);
                     clip.transition_in = Some(crate::model::Transition {

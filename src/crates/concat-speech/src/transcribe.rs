@@ -1369,6 +1369,7 @@ mod tests {
                     window,
                     model_id,
                     language: std::env::var("CONCAT_CAPTION_LANGUAGE").ok(),
+                    word_timestamps: false,
                 },
                 |_| {},
             )
@@ -1710,6 +1711,7 @@ mod accuracy {
                         window: 3600.0,
                         model_id: model.to_owned(),
                         language,
+                        word_timestamps: false,
                     };
                     // The model's load is timed apart from the work: it is
                     // paid once per session, not per run.

@@ -2579,15 +2579,15 @@ mod tests {
         }
     }
 
-    /// A codec the device has no decoder for - a JPEG still, here - opens
+    /// A codec the device has no decoder for - a PNG still, here - opens
     /// in software straight away, with the device asked for, and decodes.
     #[test]
     fn a_codec_the_device_lacks_decodes_in_software() {
         let path =
-            std::env::temp_dir().join(format!("concat-decode-jpeg-{}.jpg", std::process::id()));
-        let mut frame = Frame::black(64, 64);
-        frame.fill([200, 40, 40, 255]);
-        let bytes = crate::encode::jpeg(&frame, 90).expect("a jpeg");
+            std::env::temp_dir().join(format!("concat-decode-png-{}.png", std::process::id()));
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(64, 64).expect("a pixmap");
+        pixmap.fill(resvg::tiny_skia::Color::from_rgba8(200, 40, 40, 255));
+        let bytes = pixmap.encode_png().expect("a png");
         std::fs::write(&path, bytes).expect("writes the still");
         let device = HwDevice::platform_default().unwrap_or(HwDevice::VideoToolbox);
         let mut decoder = Decoder::open(&path, &DecodeOptions::default().accelerated(device))
@@ -2595,7 +2595,7 @@ mod tests {
         assert_eq!(
             decoder.hardware(),
             None,
-            "a JPEG is not the device's to decode"
+            "a PNG is not the device's to decode"
         );
         let decoded = decoder.next_frame().expect("decodes").expect("the picture");
         let _ = std::fs::remove_file(&path);

@@ -1631,10 +1631,10 @@ fn recovered(
             dead.adapter_info().name
         ));
     }
-    let fresh = if losses == 1 && lent.is_none() {
-        WgpuCompositor::new()
-    } else {
-        WgpuCompositor::software()
+    let fresh = match (losses, lent) {
+        (1, Some(lent)) => Some(lent.sibling()),
+        (1, None) => WgpuCompositor::new(),
+        _ => WgpuCompositor::software().or_else(WgpuCompositor::new),
     };
     let mut compositor = fresh.ok_or_else(|| {
         format!("the GPU device was lost part way through the export, and {NO_RENDERER}")
@@ -3109,15 +3109,16 @@ mod tests {
             ramp_in: 0.0,
             ramp_out: 0.0,
         };
-        let Some(mut compositor) = WgpuCompositor::new() else {
+        let Ok(out) = headless(|compositor| {
+            composite_treated(
+                compositor,
+                &stack(Rational::from_int(1)),
+                std::slice::from_ref(&mono),
+                &[],
+            )
+        }) else {
             return; // no renderer here
         };
-        let out = composite_treated(
-            &mut compositor,
-            &stack(Rational::from_int(1)),
-            std::slice::from_ref(&mono),
-            &[],
-        );
         // Red through Mono is grey where nothing sits on top...
         let grey = at_of(&out, 7, 7);
         assert!(
@@ -3132,7 +3133,10 @@ mod tests {
             strength: 0.5,
             ..mono.clone()
         };
-        let out = composite_treated(&mut compositor, &stack(Rational::from_int(1)), &[half], &[]);
+        let out = headless(|compositor| {
+            composite_treated(compositor, &stack(Rational::from_int(1)), &[half], &[])
+        })
+        .expect("renders half-strength treatment");
         let pixel = at_of(&out, 7, 7);
         assert!(
             pixel[0] > pixel[1] + 60 && pixel[1] > grey[1] / 4 && pixel[0] < 255,
@@ -3140,7 +3144,10 @@ mod tests {
         );
 
         // Outside its span the treatment does nothing.
-        let out = composite_treated(&mut compositor, &stack(Rational::from_int(20)), &[mono], &[]);
+        let out = headless(|compositor| {
+            composite_treated(compositor, &stack(Rational::from_int(20)), &[mono], &[])
+        })
+        .expect("renders outside treatment span");
         assert_eq!(at_of(&out, 7, 7), [255, 0, 0]);
         fn at_of(frame: &Frame, x: usize, y: usize) -> [u8; 3] {
             let p = &frame.pixels()[(y * 8 + x) * 4..(y * 8 + x) * 4 + 3];
@@ -3913,7 +3920,7 @@ mod tests {
         let quick = std::time::Duration::from_millis(30);
         assert!(progress_due(0, quick));
         assert!(!progress_due(1, quick));
-        assert!(progress_due(15, quick));
+        assert!(progress_due(PROGRESS_FRAMES, quick));
         assert!(progress_due(1, std::time::Duration::from_millis(1200)));
         assert!(progress_due(7, PROGRESS_INTERVAL));
     }

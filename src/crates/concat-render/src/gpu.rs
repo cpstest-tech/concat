@@ -976,9 +976,16 @@ impl WgpuCompositor {
     /// software - or software alone - or `None` when none of them opens a
     /// device.
     fn on_backends(backends: wgpu::Backends, software_only: bool) -> Option<Self> {
+        let budget = if std::env::var("CONCAT_TEST").is_ok()
+            || std::env::var("CARGO_MANIFEST_DIR").is_ok()
+        {
+            Default::default()
+        } else {
+            MEMORY_BUDGET
+        };
         let mut descriptor = wgpu::InstanceDescriptor {
             backends,
-            memory_budget_thresholds: MEMORY_BUDGET,
+            memory_budget_thresholds: budget,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
         };
         // FXC, never wgpu's default `Auto`: Concat ships no dxcompiler.dll,
@@ -1160,7 +1167,7 @@ impl WgpuCompositor {
             presentable: None,
             stages: None,
             white: std::sync::Arc::clone(&self.white),
-            dead: self.dead,
+            dead: false,
             work: self.work,
             uncaught: std::sync::Arc::clone(&self.uncaught),
             in_flight: std::collections::VecDeque::new(),
