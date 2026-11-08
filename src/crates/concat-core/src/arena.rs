@@ -87,6 +87,7 @@ impl<T> fmt::Debug for Id<T> {
     }
 }
 
+#[derive(Clone)]
 enum Slot<T> {
     Occupied { value: T, generation: u32 },
     Vacant { generation: u32 },
@@ -94,6 +95,7 @@ enum Slot<T> {
 
 /// A slab of `T` addressed by [`Id`], where removed slots are reused without
 /// letting old handles alias the new occupant.
+#[derive(Clone)]
 pub struct Arena<T> {
     slots: Vec<Slot<T>>,
     free: Vec<u32>,

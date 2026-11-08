@@ -28,6 +28,18 @@ pub mod samples;
 pub mod svg;
 pub mod treat;
 
+static PLAYBACK_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Marks whether timeline/preview playback is actively running.
+pub fn set_playback_active(active: bool) {
+    PLAYBACK_ACTIVE.store(active, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether timeline/preview playback is actively running.
+pub fn is_playback_active() -> bool {
+    PLAYBACK_ACTIVE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub use decode::{ColorRange, ColorSignal, DecodeOptions, Decoder, FrameSource, SeekableSource};
 pub use encode::{EncodeOptions, Encoder, FrameSink, RateMode, VideoCodec, jpeg};
 pub use error::{Error, Result};

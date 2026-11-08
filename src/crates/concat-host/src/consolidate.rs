@@ -139,12 +139,13 @@ impl Consolidation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use concat_project::model::{ClipKind, MediaKind};
 
     fn selection() -> (Project, Vec<String>) {
         let mut project = Project::default();
         let track = project.active().tracks[0].id.clone();
-        project.media.push(MediaItem {
+        Arc::make_mut(&mut project.media).push(MediaItem {
             id: "m1".into(),
             path: "/original.mp4".into(),
             kind: MediaKind::Video,
@@ -213,7 +214,7 @@ mod tests {
         project.active_mut().clip_mut("c2").unwrap().source_start = 11.0;
         assert!(plan.replacement(&project, item.clone()).is_err());
         project.active_mut().clip_mut("c2").unwrap().source_start = 10.0;
-        project.media[0].path = "/relinked.mp4".into();
+        Arc::make_mut(&mut project.media)[0].path = "/relinked.mp4".into();
         assert!(plan.replacement(&project, item).is_err());
     }
 }

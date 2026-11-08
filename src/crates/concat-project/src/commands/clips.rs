@@ -479,7 +479,7 @@ pub(super) fn apply(
                 Some(existing) => existing.id.clone(),
                 None => {
                     let id = mint.next("m");
-                    project.media.push(MediaItem {
+                    Arc::make_mut(&mut project.media).push(MediaItem {
                         id: id.clone(),
                         path: item.path,
                         name: item.name,
@@ -612,7 +612,7 @@ pub(super) fn apply(
                     existing.id.clone()
                 } else {
                     let id = mint.next("m");
-                    project.media.push(MediaItem {
+                    Arc::make_mut(&mut project.media).push(MediaItem {
                         id: id.clone(),
                         path: item.path,
                         name: item.name,

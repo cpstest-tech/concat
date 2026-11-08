@@ -22,7 +22,7 @@ use std::sync::Arc;
 use concat_host::preview::FrameSpec;
 use concat_project::model::Project;
 
-use crate::host::{spawn_detached, spawn_frame};
+use crate::host::spawn_frame;
 use crate::i18n::tf;
 use crate::panes::Msg;
 use crate::studio::Studio;
@@ -376,10 +376,13 @@ impl MonitorPane {
         }
         spawn_frame(
             move || {
-                // When paused or scrubbing, cancel any stale playback
-                // prefetch before decoding so background workers do not hold
-                // the reader's lock across the scrub target.
-                if !spec.moving {
+                let ahead = concat_media::prefetch::AHEAD;
+                if spec.moving && !spec.nearest {
+                    monitor.prefetch(Arc::clone(&clips), &settings, spec, ahead);
+                } else if !spec.moving {
+                    // When paused or scrubbing, cancel any stale playback
+                    // prefetch before decoding so background workers do not hold
+                    // the reader's lock across the scrub target.
                     monitor.prefetch(Arc::clone(&clips), &settings, spec, 0);
                 }
                 // On the window's device the frame stays a texture; without
@@ -393,27 +396,8 @@ impl MonitorPane {
                         .frame_pixels(Arc::clone(&clips), &settings, spec)
                         .map(|(bytes, exact)| Picture::Pixels(bytes, width, height, exact))
                 };
-                // Decode-ahead for whatever comes next, on a worker of its
-                // own, so the frame goes to the window without waiting for
-                // it and the next frame can start meanwhile. Playback asks a
-                // full window ahead: the scheduler adds only the frames it
-                // has not queued yet, so asking for all of them each frame
-                // costs nothing and keeps a slow decode from catching up
-                // with the playhead. Not for a scrub: the frames after one
-                // it is passing through are walks from a keyframe, each one
-                // the cost the scrub went to the nearest picture to avoid,
-                // and in the way of the next.
-                if !spec.nearest {
-                    let monitor = monitor.clone();
-                    let settings = settings.clone();
-                    let ahead = if spec.moving {
-                        concat_media::prefetch::AHEAD
-                    } else {
-                        1
-                    };
-                    spawn_detached(move || {
-                        monitor.prefetch(clips, &settings, spec, ahead);
-                    });
+                if !spec.moving && !spec.nearest {
+                    monitor.prefetch(clips, &settings, spec, ahead);
                 }
                 frame
             },

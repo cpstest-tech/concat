@@ -8,7 +8,7 @@
 //! A 4K file decodes at a few frames a second on a laptop without
 //! hardware decode; its quarter-size copy decodes at dozens. So a file
 //! larger than HD gets one, written on the scheduler's proxy lane - one
-//! at a time, on two threads, so the machine stays usable meanwhile - and
+//! at a time, using hardware acceleration and full CPU threads - and
 //! adopted into the reader pool as the file's stand-in. A request that
 //! asks for the proxy reads it; the paused monitor and the export never
 //! do, and see the original. The copy is named after the file's path,
@@ -186,13 +186,15 @@ pub fn sweep(project: &Path, keep: &HashSet<PathBuf>) -> usize {
 }
 
 /// Writes the proxy of `source`, read as `range`, at `size` to `target`:
-/// H.264, a fast preset, two threads, in software, into a temporary name
-/// that is moved into place only when whole, so a copy that is there is a
-/// copy that is complete. The copy is tagged video range and converted to
-/// match, so it is read as it is and needs no correction of its own. An
-/// HDR source's copy keeps its signal - HEVC in ten bits, HLG or PQ as the
-/// source is, on the hardware encoder where there is one - so an HDR
-/// timeline plays it as the original draws when paused.
+/// H.264, a fast preset, into a temporary name that is moved into place
+/// only when whole, so a copy that is there is a copy that is complete.
+/// Hardware decoding and encoding (NVDEC / VAAPI / NVENC etc.) are enabled
+/// where available and full CPU threads are utilized to transcode quickly in
+/// the background. The copy is tagged video range and converted to match,
+/// so it is read as it is and needs no correction of its own. An HDR source's
+/// copy keeps its signal - HEVC in ten bits, HLG or PQ as the source is - on
+/// the hardware encoder where there is one - so an HDR timeline plays it as
+/// the original draws when paused.
 pub fn write(
     source: &str,
     target: &Path,
@@ -215,8 +217,6 @@ pub fn write(
     let partial = target.with_extension("part.mp4");
     let options = DecodeOptions::default()
         .scaled_to(width, height)
-        .in_software()
-        .threaded(2)
         .in_range(range)
         .deep(hdr);
     let mut decoder = Decoder::open(source, &options).map_err(|error| error.to_string())?;
@@ -234,10 +234,8 @@ pub fn write(
         bitrate_kbps: 0,
         ten_bit: false,
         color_range: ColorRange::Limited,
-        // HEVC in ten bits costs the CPU far more than H.264 does; the
-        // media engine does it for nothing where there is one.
-        hardware: hdr,
-        threads: 2,
+        hardware: true,
+        threads: 0,
     };
     let mut encoder = if hdr {
         Encoder::create_hdr(&partial, width, height, rate, &encoding, signal)
@@ -247,6 +245,9 @@ pub fn write(
     .map_err(|error| error.to_string())?;
     let result = (|| {
         while let Some(frame) = decoder.next_frame().map_err(|error| error.to_string())? {
+            while concat_media::is_playback_active() {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
             encoder
                 .write_frame(&frame)
                 .map_err(|error| error.to_string())?;

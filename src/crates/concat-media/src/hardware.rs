@@ -278,27 +278,6 @@ fn linux_default() -> Option<HwDevice> {
     *LINUX_DEVICE
 }
 
-/// Media files whose hardware decode failed at least once: subsequent readers
-/// on the same file open directly in software without retrying hardware setup.
-static FAILED_PATHS: LazyLock<Mutex<HashSet<PathBuf>>> = LazyLock::new(Default::default);
-
-/// Whether hardware decode has already failed for `path`.
-pub(crate) fn has_failed(path: &Path) -> bool {
-    FAILED_PATHS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(path)
-}
-
-/// Records that hardware decode failed on `path`, so future readers open it
-/// straight in software.
-pub(crate) fn mark_failed(path: &Path) {
-    FAILED_PATHS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(path.to_path_buf());
-}
-
 /// How a reader chooses between the hardware and the CPU.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum HwPolicy {

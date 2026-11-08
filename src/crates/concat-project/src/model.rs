@@ -1732,6 +1732,7 @@ pub(crate) mod wire {
     use serde::{Deserialize, Deserializer};
     use serde_json::Value;
 
+    use std::sync::Arc;
     use super::{
         Background, ClipKind, ColorSpace, MaskShape, MediaKind, ParamKey, ShapeKind, TextAlign,
     };
@@ -1751,6 +1752,15 @@ pub(crate) mod wire {
                 .collect(),
             _ => Vec::new(),
         })
+    }
+
+    /// List parsed into an Arc-wrapped vector for cheap structural sharing.
+    pub fn arc_list<'de, D, T>(deserializer: D) -> Result<Arc<Vec<T>>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned,
+    {
+        list(deserializer).map(Arc::new)
     }
 
     /// [`list`], as an optional that is none when nothing parsed.
@@ -2811,12 +2821,12 @@ pub struct CustomFont {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Project {
-    /// The bin: every imported file, shared by all timelines.
-    #[serde(default, deserialize_with = "wire::list")]
-    pub media: Vec<MediaItem>,
-    /// Fonts the user added from disk, available to every title.
-    #[serde(default, deserialize_with = "wire::list")]
-    pub fonts: Vec<CustomFont>,
+    /// The bin: every imported file, shared by all timelines. Behind `Arc` for O(1) cloning during gestures.
+    #[serde(default, deserialize_with = "wire::arc_list")]
+    pub media: Arc<Vec<MediaItem>>,
+    /// Fonts the user added from disk, available to every title. Behind `Arc` for O(1) cloning during gestures.
+    #[serde(default, deserialize_with = "wire::arc_list")]
+    pub fonts: Arc<Vec<CustomFont>>,
     /// Every timeline, in tab order. Always at least one. Behind `Arc` for
     /// the reason [`Timeline::clips`] is: a command on one timeline leaves
     /// the others shared with the undo snapshot.
@@ -2853,8 +2863,8 @@ impl Project {
     /// created from the launch screen's size and rate pickers starts as.
     pub fn with_video(video: VideoSettings) -> Self {
         Self {
-            media: Vec::new(),
-            fonts: Vec::new(),
+            media: Arc::new(Vec::new()),
+            fonts: Arc::new(Vec::new()),
             extra: Map::new(),
             timelines: vec![Arc::new(Timeline {
                 id: "TL1".to_owned(),

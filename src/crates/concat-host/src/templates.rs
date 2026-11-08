@@ -111,14 +111,14 @@ pub fn save(
     // Placeholder media loses its path - it was the creator's own footage,
     // standing in. Everything else is part of the design and ships in the
     // bundle, referenced relative to it.
-    for item in &mut project.media {
+    for item in std::sync::Arc::make_mut(&mut project.media) {
         if item.placeholder {
             item.path = String::new();
             continue;
         }
         item.path = bundle_file(&assets, &item.id.clone(), &item.path.clone())?;
     }
-    for (index, font) in project.fonts.iter_mut().enumerate() {
+    for (index, font) in std::sync::Arc::make_mut(&mut project.fonts).iter_mut().enumerate() {
         font.path = bundle_file(&assets, &format!("font{index}"), &font.path.clone())?;
     }
 
@@ -238,7 +238,7 @@ fn slots_of(document: &Value) -> Vec<SlotInfo> {
         .unwrap_or(&[]);
 
     let mut slots: Vec<(f64, SlotInfo)> = Vec::new();
-    for item in &project.media {
+    for item in project.media.iter() {
         if !item.placeholder {
             continue;
         }

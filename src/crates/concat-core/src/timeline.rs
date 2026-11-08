@@ -387,7 +387,7 @@ impl Track {
 }
 
 /// The edit: output format, tracks, and the clips on them.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Timeline {
     /// Output frame rate.
     pub frame_rate: FrameRate,
@@ -501,6 +501,28 @@ impl Timeline {
     /// last-added one wins, which matches what you see after a paste.
     pub fn clip_on_track_at(&self, track: TrackId, time: Rational) -> Option<ClipId> {
         let track = self.tracks.get(track)?;
+        if track.clips.is_empty() {
+            return None;
+        }
+        if track.clips.len() > 16 {
+            let first_start = self.clips.get(track.clips[0]).map(|c| c.start);
+            let last_start = self.clips.get(*track.clips.last().unwrap()).map(|c| c.start);
+            if let (Some(first), Some(last)) = (first_start, last_start) {
+                if first <= last {
+                    let idx = track.clips.partition_point(|&id| {
+                        self.clips.get(id).map_or(false, |c| c.start <= time)
+                    });
+                    if idx > 0 {
+                        for candidate_idx in (idx.saturating_sub(4)..idx).rev() {
+                            let id = track.clips[candidate_idx];
+                            if self.clips.get(id).is_some_and(|c| c.contains(time)) {
+                                return Some(id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         track
             .clips
             .iter()

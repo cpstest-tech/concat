@@ -42,7 +42,7 @@ pub(super) fn apply(
                 return Ok(Outcome::default());
             }
             let id = mint.next("m");
-            project.media.push(MediaItem {
+            Arc::make_mut(&mut project.media).push(MediaItem {
                 id: id.clone(),
                 path: item.path,
                 name: item.name,
@@ -72,8 +72,7 @@ pub(super) fn apply(
             media_id,
             placeholder,
         } => {
-            let applied = project
-                .media
+            let applied = Arc::make_mut(&mut project.media)
                 .iter_mut()
                 .find(|item| item.id == media_id)
                 .is_some_and(|item| assign(&mut item.placeholder, placeholder));
@@ -84,8 +83,7 @@ pub(super) fn apply(
         }
 
         Command::FillSlot { media_id, item } => {
-            let media = project
-                .media
+            let media = Arc::make_mut(&mut project.media)
                 .iter_mut()
                 .find(|existing| existing.id == media_id)
                 .ok_or(CommandError::SlotGone)?;
@@ -151,7 +149,7 @@ pub(super) fn apply(
             // All timelines, not just the active one: a shelved clip whose
             // media is gone would linger as a dead reference.
             let media_count = project.media.len();
-            project.media.retain(|item| item.id != media_id);
+            Arc::make_mut(&mut project.media).retain(|item| item.id != media_id);
             let mut applied = project.media.len() != media_count;
             for timeline in project.timelines.iter_mut().map(Arc::make_mut) {
                 let clip_count = timeline.clips.len();
@@ -168,7 +166,7 @@ pub(super) fn apply(
             if project.fonts.iter().any(|font| font.path == path) {
                 return Ok(Outcome::default());
             }
-            project.fonts.push(CustomFont { family, path });
+            Arc::make_mut(&mut project.fonts).push(CustomFont { family, path });
             Ok(Outcome {
                 created_id: None,
                 applied: true,
@@ -179,7 +177,7 @@ pub(super) fn apply(
             // Clips keep the family name: the face may come back when the
             // file does.
             let font_count = project.fonts.len();
-            project.fonts.retain(|font| font.family != family);
+            Arc::make_mut(&mut project.fonts).retain(|font| font.family != family);
             let applied = project.fonts.len() != font_count;
             Ok(Outcome {
                 created_id: None,
@@ -188,8 +186,7 @@ pub(super) fn apply(
         }
 
         Command::UpdateMediaPath { media_id, new_path } => {
-            let applied = project
-                .media
+            let applied = Arc::make_mut(&mut project.media)
                 .iter_mut()
                 .find(|item| item.id == media_id)
                 .is_some_and(|item| assign(&mut item.path, new_path));
@@ -200,8 +197,7 @@ pub(super) fn apply(
         }
 
         Command::SetMediaColorRange { media_id, range } => {
-            let applied = project
-                .media
+            let applied = Arc::make_mut(&mut project.media)
                 .iter_mut()
                 .find(|item| item.id == media_id)
                 .is_some_and(|item| assign(&mut item.color_range, range));

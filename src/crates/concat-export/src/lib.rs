@@ -25,7 +25,8 @@ pub mod flatten;
 mod resolve;
 
 use resolve::{
-    BuiltTimeline, TransitionSpan, Treatment, animation_of, build_timeline, quantise, quantise_at,
+    BuiltTimeline, TransitionSpan, Treatment, animation_of, build_timeline, planned_geometry,
+    quantise, quantise_at,
 };
 
 use std::collections::{BTreeMap, HashMap};
@@ -1254,24 +1255,45 @@ pub fn render_on(
     // that failed - the disk full, a read error - left a truncated file
     // where the previous export had been (audit 2026-10-09, finding 4).
     let result = (|| -> Result<(), String> {
-        render_picture(
-            request,
-            compositor,
-            rate,
-            total_frames,
-            &visible,
-            transitions,
-            &silent,
-            &mut reporter,
-        )?;
-
         let finished = if sound.is_empty() {
+            render_picture(
+                request,
+                compositor,
+                rate,
+                total_frames,
+                &visible,
+                transitions,
+                &silent,
+                &mut reporter,
+            )?;
             &silent
         } else {
-            reporter.cancelled()?;
-            reporter.emit(0, total_frames, "mixing audio");
             let mix: Vec<AudioClip> = sound.iter().flat_map(|clip| audio_pieces(clip)).collect();
-            audio::mix_to_file(&mix, timeline_end, &mixed).map_err(|error| error.to_string())?;
+            let mixed_path = &mixed;
+            let cancel = reporter.cancel;
+            std::thread::scope(|s| -> Result<(), String> {
+                let audio_handle = s.spawn(|| {
+                    audio::mix_to_file_cancellable(&mix, timeline_end, mixed_path, Some(cancel))
+                        .map_err(|error| error.to_string())
+                });
+                let video_result = render_picture(
+                    request,
+                    compositor,
+                    rate,
+                    total_frames,
+                    &visible,
+                    transitions,
+                    &silent,
+                    &mut reporter,
+                );
+                if video_result.is_err() {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                let audio_res = audio_handle.join().unwrap_or_else(|_| Err("audio mixing thread panicked".into()));
+                video_result?;
+                audio_res?;
+                Ok(())
+            })?;
 
             reporter.cancelled()?;
             reporter.emit(total_frames, total_frames, "muxing");
@@ -1798,17 +1820,6 @@ fn render_picture(
     // When progress was last said; see `progress_due`.
     let mut said = std::time::Instant::now();
 
-    // One decoder per clip, opened at its in-point the first time the clip is
-    // needed and dropped the moment it leaves the playhead. Every decoder is
-    // opened at `output rate / clip speed`, so pulling exactly one frame per
-    // output frame keeps each of them in step with the plan's source times
-    // without any seeking - including retimed clips.
-    let mut decoders: HashMap<ClipId, Decoder> = HashMap::new();
-    // A clip whose speed changes, or runs backwards, cannot be followed by a
-    // paced decoder: each of its frames is sought by its own source time,
-    // through a pool that keeps the reader rolling where it can.
-    let sought = concat_media::ReaderPool::with_defaults();
-
     // Where the pass's time went, said at its end: reading the footage,
     // drawing the frame, and handing it to the encoder.
     let begun = std::time::Instant::now();
@@ -1820,207 +1831,245 @@ fn render_picture(
         std::collections::VecDeque::new();
     while compositor.collect().is_some() {}
 
-    for index in 0..total_frames {
-        reporter.cancelled()?;
+    let cancel = reporter.cancel;
+    let mut taken = true;
+    std::thread::scope(|s| -> Result<(), String> {
+        let (plan_tx, plan_rx) =
+            std::sync::mpsc::sync_channel::<Result<(i64, FramePlan), String>>(4);
 
-        let reading = std::time::Instant::now();
-        let time = rate.time_of_frame(index);
-        let plan = plan_frame(&timeline, time);
-
-        let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan.layers.len());
-        for layer in &plan.layers {
-            if !layer.paced {
-                let (decode_width, decode_height) = decode_sizes
-                    .get(&layer.clip)
-                    .copied()
-                    .unwrap_or((request.width, request.height));
-                // A frame that cannot be read ends the export with the
-                // reason, as it does on the paced path below. A time past
-                // the media's end is not that: the pool answers it with the
-                // last frame. This path used to drop a failed frame on the
-                // floor, so a reversed or retimed clip whose file had gone
-                // bad exported as a missing layer and nobody was told.
-                let frame = sought
-                    .frame_at(
-                        &layer.media,
-                        layer.source_time,
-                        decode_width,
-                        decode_height,
-                        stills.contains(&layer.clip),
-                        None,
-                        None,
-                        ranges.get(&layer.clip).copied(),
-                        // Deep where the frame goes to the GPU as it is: a
-                        // cutout cuts eight bits.
-                        !cutouts.contains_key(&layer.clip),
-                    )
-                    .map_err(|error| error.to_string())?;
-                let frame = cutouts
-                    .get(&layer.clip)
-                    .and_then(|job| job.cut(&frame, layer.source_time))
-                    .map_or(frame, std::sync::Arc::new);
-                layers.push(filled(
-                    layer,
-                    frame,
-                    tracks.get(&layer.clip).copied().unwrap_or(0),
-                    passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
-                    geometry.get(&layer.clip),
-                    shapes_at(&shapes, layer, time, rate),
-                    stabilized.get(&layer.clip),
-                ));
-                continue;
+        struct ScopeGuard<'a> {
+            rx: Option<std::sync::mpsc::Receiver<Result<(i64, FramePlan), String>>>,
+            cancel: &'a AtomicBool,
+            finished_normally: bool,
+        }
+        impl<'a> Drop for ScopeGuard<'a> {
+            fn drop(&mut self) {
+                if !self.finished_normally {
+                    self.cancel.store(true, Ordering::Relaxed);
+                }
+                drop(self.rx.take());
             }
-            let decoder = match decoders.entry(layer.clip) {
-                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    // Aspect-correct: decode at the source's fitted size and
-                    // let the compositor place it, rather than stretching to
-                    // the frame and losing the picture's shape.
-                    let (decode_width, decode_height) = decode_sizes
-                        .get(&layer.clip)
-                        .copied()
-                        .unwrap_or((request.width, request.height));
+        }
 
-                    // A retimed clip advances the source by `speed / fps`
-                    // seconds per output frame, so the decoder must emit
-                    // frames exactly that far apart: a rate of `fps / speed`.
-                    // (At 2x, 300 output frames cover 20s of source - the
-                    // decoder emits 15 frames per source second, not 60.)
-                    let decode_rate = if layer.speed == Rational::ONE {
-                        rate
-                    } else {
-                        FrameRate::new(rate.fps() / layer.speed)
+        let mut guard = ScopeGuard {
+            rx: Some(plan_rx),
+            cancel,
+            finished_normally: false,
+        };
+
+        // Dedicated decode worker thread: pre-fetches and decodes frames ahead of GPU compositing
+        s.spawn(move || {
+            let mut decoders: HashMap<ClipId, Decoder> = HashMap::new();
+            let sought = concat_media::ReaderPool::with_defaults();
+            for index in 0..total_frames {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
+                }
+                let time = rate.time_of_frame(index);
+                let plan = plan_frame(&timeline, time);
+
+                let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan.layers.len());
+                let mut failed: Option<String> = None;
+                for layer in &plan.layers {
+                    if !layer.paced {
+                        let (decode_width, decode_height) = decode_sizes
+                            .get(&layer.clip)
+                            .copied()
+                            .unwrap_or((request.width, request.height));
+                        let frame = match sought.frame_at(
+                            &layer.media,
+                            layer.source_time,
+                            decode_width,
+                            decode_height,
+                            stills.contains(&layer.clip),
+                            None,
+                            None,
+                            ranges.get(&layer.clip).copied(),
+                            !cutouts.contains_key(&layer.clip),
+                        ) {
+                            Ok(f) => f,
+                            Err(error) => {
+                                failed = Some(error.to_string());
+                                break;
+                            }
+                        };
+                        let frame = cutouts
+                            .get(&layer.clip)
+                            .and_then(|job| job.cut(&frame, layer.source_time))
+                            .map_or(frame, std::sync::Arc::new);
+                        layers.push(filled(
+                            layer,
+                            frame,
+                            tracks.get(&layer.clip).copied().unwrap_or(0),
+                            passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
+                            geometry.get(&layer.clip),
+                            shapes_at(&shapes, layer, time, rate),
+                            stabilized.get(&layer.clip),
+                        ));
+                        continue;
+                    }
+                    let decoder = match decoders.entry(layer.clip) {
+                        std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            let (decode_width, decode_height) = decode_sizes
+                                .get(&layer.clip)
+                                .copied()
+                                .unwrap_or((request.width, request.height));
+
+                            let decode_rate = if layer.speed == Rational::ONE {
+                                rate
+                            } else {
+                                FrameRate::new(rate.fps() / layer.speed)
+                            };
+
+                            let mut options = DecodeOptions::default()
+                                .starting_at(layer.source_time)
+                                .scaled_to(decode_width, decode_height)
+                                .at_rate(decode_rate)
+                                .in_range(ranges.get(&layer.clip).copied())
+                                .deep(!cutouts.contains_key(&layer.clip));
+
+                            if stills.contains(&layer.clip) {
+                                options = options.repeating().starting_at(Rational::ZERO);
+                            }
+
+                            match Decoder::open(&layer.media, &options) {
+                                Ok(d) => entry.insert(d),
+                                Err(error) => {
+                                    failed = Some(error.to_string());
+                                    break;
+                                }
+                            }
+                        }
                     };
 
-                    // Deep - an HDR clip in its own signal, converted on
-                    // the GPU - unless a cutout has to cut it in eight bits;
-                    // the decoder keeps eight bits for a chain itself.
-                    let mut options = DecodeOptions::default()
-                        .starting_at(layer.source_time)
-                        .scaled_to(decode_width, decode_height)
-                        .at_rate(decode_rate)
-                        .in_range(ranges.get(&layer.clip).copied())
-                        .deep(!cutouts.contains_key(&layer.clip));
-
-                    // A still is a one-frame stream. Without looping it would
-                    // contribute a single frame and then disappear.
-                    if stills.contains(&layer.clip) {
-                        options = options.repeating().starting_at(Rational::ZERO);
+                    match decoder.next_frame() {
+                        Ok(Some(frame)) => {
+                            let frame = match cutouts
+                                .get(&layer.clip)
+                                .and_then(|job| job.cut(&frame, layer.source_time))
+                            {
+                                Some(cut) => cut,
+                                None => frame,
+                            };
+                            layers.push(filled(
+                                layer,
+                                std::sync::Arc::new(frame),
+                                tracks.get(&layer.clip).copied().unwrap_or(0),
+                                passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
+                                geometry.get(&layer.clip),
+                                shapes_at(&shapes, layer, time, rate),
+                                stabilized.get(&layer.clip),
+                            ));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            failed = Some(error.to_string());
+                            break;
+                        }
                     }
-
-                    entry.insert(
-                        Decoder::open(&layer.media, &options).map_err(|error| error.to_string())?,
-                    )
                 }
-            };
 
-            // A source that has run out contributes nothing rather than
-            // aborting the export - a clip trimmed past its media's end is a
-            // mistake in the edit, not a failure of the renderer.
-            if let Some(frame) = decoder.next_frame().map_err(|error| error.to_string())? {
-                // The cutout, on the decoded picture before it is placed:
-                // the same frame both compositors then draw.
-                let frame = match cutouts
-                    .get(&layer.clip)
-                    .and_then(|job| job.cut(&frame, layer.source_time))
-                {
-                    Some(cut) => cut,
-                    None => frame,
+                if let Some(err) = failed {
+                    let _ = plan_tx.send(Err(err));
+                    break;
+                }
+
+                let frame_plan = FramePlan {
+                    time,
+                    width: request.width,
+                    height: request.height,
+                    layers: with_backdrops(
+                        layers,
+                        &backdrops,
+                        |clip| !stills.contains(&clip) && !cutouts.contains_key(&clip),
+                        &sought,
+                        (request.width, request.height),
+                    ),
+                    treatments: Vec::new(),
+                    output: output_of(request.color_space),
                 };
-                layers.push(filled(
-                    layer,
-                    std::sync::Arc::new(frame),
-                    tracks.get(&layer.clip).copied().unwrap_or(0),
-                    passes_at(&chains, &reveal_maps, &timeline, layer.clip, time),
-                    geometry.get(&layer.clip),
-                    shapes_at(&shapes, layer, time, rate),
-                    stabilized.get(&layer.clip),
-                ));
-            }
-        }
 
-        let frame_plan = FramePlan {
-            time,
-            width: request.width,
-            height: request.height,
-            layers: with_backdrops(
-                layers,
-                &backdrops,
-                |clip| !stills.contains(&clip) && !cutouts.contains_key(&clip),
-                &sought,
-                (request.width, request.height),
-            ),
-            treatments: Vec::new(),
-            output: output_of(request.color_space),
-        };
-        let drawing = std::time::Instant::now();
-        spent.reading += drawing - reading;
-        let mut device = Device {
-            compositor: &mut compositor,
-            offset: effect_offset,
-            losses: &mut losses,
-            hdr,
-            lent: &mut lent,
-            total_frames,
-            planar,
-        };
-        // A frame one draw makes goes to the device and is collected a
-        // frame or two later, so the device draws while the next frame's
-        // footage is read; one a transition spans is several draws, and
-        // waits for those ahead of it to come back first.
-        let mut drawn = Vec::new();
-        let mut unsent = Some(frame_plan);
-        if !transitions.iter().any(|span| span.covers(time))
-            && let Some(mut plan) = unsent.take()
-        {
-            plan.treatments = live_treatments(&treatments, time);
-            if in_flight.len() >= IN_FLIGHT {
-                drawn.extend(device.collect(&mut in_flight)?);
+                if plan_tx.send(Ok((index, frame_plan))).is_err() {
+                    break;
+                }
+
+                let live: Vec<ClipId> = plan.layers.iter().map(|layer| layer.clip).collect();
+                decoders.retain(|clip, _| live.contains(clip));
             }
-            if device.clock().submit(&plan) {
-                in_flight.push_back((index, plan));
-            } else {
-                unsent = Some(plan);
-            }
-        }
-        if let Some(frame_plan) = unsent {
-            while !in_flight.is_empty() {
-                drawn.extend(device.collect(&mut in_flight)?);
-            }
-            // The plan is kept for a second drawing: a frame drawn on a
-            // device that died under it is black, and is drawn again on
-            // the device that takes over. Both drawings borrow it - the
-            // layers' pictures were never copied, and their passes are
-            // not either.
-            drawn.push(Drawn::Rgba(device.surviving(index, time, |clock| {
-                composite_treated(clock, &frame_plan, &treatments, &transitions)
-            })?));
-        }
-        let queueing = std::time::Instant::now();
-        spent.drawing += queueing - drawing;
-        let last_drawn = drawn.last();
-        if progress_due(index, said.elapsed()) {
-            if let Some(composed) = last_drawn {
-                reporter.emit_frame(index, total_frames, "rendering", composed);
-            } else {
-                reporter.emit(index, total_frames, "rendering");
-            }
-            said = std::time::Instant::now();
-        }
-        let taken = drawn.into_iter().all(|frame| writer.write(frame));
-        spent.waiting += queueing.elapsed();
-        if !taken {
-            let (_, error) = match writer.finish() {
-                Err(stopped) => stopped,
-                Ok(_) => unreachable!("an encoder that refused a frame finished"),
+        });
+
+        // Main thread: GPU compositing, submit, and collect concurrent with the decode worker
+        let rx = guard.rx.as_ref().expect("channel receiver present");
+        while let Ok(item) = rx.recv() {
+            let (index, frame_plan) = item?;
+            reporter.cancelled()?;
+
+            let time = rate.time_of_frame(index);
+            let drawing = std::time::Instant::now();
+            let mut device = Device {
+                compositor: &mut compositor,
+                offset: effect_offset,
+                losses: &mut losses,
+                hdr,
+                lent: &mut lent,
+                total_frames,
+                planar,
             };
-            return Err(error.to_string());
-        }
 
-        // Retire decoders whose clip has finished, so a long timeline does not
-        // hold an ffmpeg process open for every clip it has ever passed.
-        let live: Vec<ClipId> = plan.layers.iter().map(|layer| layer.clip).collect();
-        decoders.retain(|clip, _| live.contains(clip));
+            let mut drawn = Vec::new();
+            let mut unsent = Some(frame_plan);
+            if !transitions.iter().any(|span| span.covers(time))
+                && let Some(mut plan) = unsent.take()
+            {
+                plan.treatments = live_treatments(&treatments, time);
+                if in_flight.len() >= IN_FLIGHT {
+                    drawn.extend(device.collect(&mut in_flight)?);
+                }
+                if device.clock().submit(&plan) {
+                    in_flight.push_back((index, plan));
+                } else {
+                    unsent = Some(plan);
+                }
+            }
+            if let Some(frame_plan) = unsent {
+                while !in_flight.is_empty() {
+                    drawn.extend(device.collect(&mut in_flight)?);
+                }
+                drawn.push(Drawn::Rgba(device.surviving(index, time, |clock| {
+                    composite_treated(clock, &frame_plan, &treatments, &transitions)
+                })?));
+            }
+            let queueing = std::time::Instant::now();
+            spent.drawing += queueing - drawing;
+            let last_drawn = drawn.last();
+            if progress_due(index, said.elapsed()) {
+                if let Some(composed) = last_drawn {
+                    reporter.emit_frame(index, total_frames, "rendering", composed);
+                } else {
+                    reporter.emit(index, total_frames, "rendering");
+                }
+                said = std::time::Instant::now();
+            }
+            taken = drawn.into_iter().all(|frame| writer.write(frame));
+            spent.waiting += queueing.elapsed();
+            if !taken {
+                break;
+            }
+        }
+        if taken {
+            guard.finished_normally = true;
+        }
+        drop(guard.rx.take());
+        Ok(())
+    })?;
+
+    if !taken {
+        let (_, error) = match writer.finish() {
+            Err(stopped) => stopped,
+            Ok(_) => unreachable!("an encoder that refused a frame finished"),
+        };
+        return Err(error.to_string());
     }
 
     // The last frames, still on their way back.
@@ -2033,7 +2082,6 @@ fn render_picture(
         total_frames,
         planar,
     };
-    let mut taken = true;
     while taken && !in_flight.is_empty() {
         let drawn = device.collect(&mut in_flight)?;
         taken = drawn.into_iter().all(|frame| writer.write(frame));
@@ -2060,10 +2108,9 @@ fn render_picture(
 }
 
 /// Frames a drawn picture may wait for the encoder: enough that a frame
-/// slow to draw or to encode does not hold up the other side, few enough
-/// that the queue is a few hundred megabytes at most - a 4K frame in
-/// sixteen bits a channel is 66 MB.
-const ENCODER_QUEUE: usize = 2;
+/// slow to draw or to encode does not hold up the other side, providing
+/// smooth asynchronous pipelining between compositor and encoder.
+const ENCODER_QUEUE: usize = 4;
 
 /// What the encoder's thread is handed.
 enum Job {
@@ -2388,10 +2435,10 @@ fn with_treatments(
     std::borrow::Cow::Owned(plan)
 }
 
-/// How many frames an export keeps on their way back from the device: the
-/// one being drawn and the one being read back while the next frame's
-/// footage is decoded.
-const IN_FLIGHT: usize = 2;
+/// How many frames an export keeps on their way back from the device:
+/// triple buffering (one drawn, one mapped/read back, one ready for encoder)
+/// so that GPU pipelines remain saturated.
+const IN_FLIGHT: usize = 3;
 
 /// The export's device and what it takes to keep one: the compositor, the
 /// shader clock's offset, and what a device lost under the export needs to
@@ -2914,6 +2961,7 @@ pub fn preview_sources_of(
 /// about a clip list that does not depend on the instant, so a caller
 /// showing many instants of one document builds it once. See
 /// [`preview_plan`].
+#[derive(Clone, Debug)]
 pub struct PreviewPlan {
     built: BuiltTimeline,
     rate: FrameRate,
@@ -2971,6 +3019,87 @@ pub fn preview_plan(
         width,
         height,
         output: output_of(color_space),
+    }
+}
+
+/// Checks whether two clip lists share the exact same timeline and decoding topology
+/// (same files, spans, tracks, speeds, transitions, and filters).
+/// If true, pure rendering transformations (transforms, opacity, crop, flip) can be
+/// updated without rebuilding the timeline graph or scanning cutout masks from disk.
+pub fn same_topology(a: &[ExportClip], b: &[ExportClip]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b.iter()).all(|(c1, c2)| {
+        c1.path == c2.path
+            && c1.audio_stream == c2.audio_stream
+            && c1.color_range == c2.color_range
+            && c1.kind == c2.kind
+            && (c1.start - c2.start).abs() < 1e-6
+            && (c1.duration - c2.duration).abs() < 1e-6
+            && (c1.source_start - c2.source_start).abs() < 1e-6
+            && c1.track == c2.track
+            && c1.hidden == c2.hidden
+            && c1.muted == c2.muted
+            && c1.hold == c2.hold
+            && (c1.speed - c2.speed).abs() < 1e-6
+            && c1.speed_curve == c2.speed_curve
+            && c1.speed_slopes == c2.speed_slopes
+            && c1.filter_chain == c2.filter_chain
+            && c1.transition_shapes == c2.transition_shapes
+    })
+}
+
+impl PreviewPlan {
+    /// Fast-path update of clip transforms, opacities, and geometric parameters in place
+    /// without rebuilding the timeline graph or reopening cutout masks.
+    pub fn update_visuals(&mut self, clips: &[ExportClip]) {
+        let visible: Vec<&ExportClip> = clips
+            .iter()
+            .filter(|clip| (clip.kind.is_visual() || clip.kind == ClipKind::Layer) && !clip.hidden)
+            .collect();
+        let track_ids: Vec<_> = self.built.timeline.track_ids().to_vec();
+        let mut track_clip_indices = vec![0usize; track_ids.len()];
+        let mut treatment_index = 0usize;
+
+        for clip in visible {
+            if clip.kind == ClipKind::Layer {
+                if let Some(treatment) = self.built.treatments.get_mut(treatment_index) {
+                    treatment.strength = clip.opacity.clamp(0.0, 1.0) as f32;
+                    treatment_index += 1;
+                }
+                continue;
+            }
+            if clip.track >= track_ids.len() {
+                continue;
+            }
+            let track_id = track_ids[clip.track];
+            let clip_idx = track_clip_indices[clip.track];
+            track_clip_indices[clip.track] += 1;
+
+            if let Some(track) = self.built.timeline.track(track_id) {
+                if let Some(&engine_clip_id) = track.clips().get(clip_idx) {
+                    if let Some(engine_clip) = self.built.timeline.clip_mut(engine_clip_id) {
+                        engine_clip.transform = concat_core::timeline::Transform {
+                            scale: clip.scale,
+                            offset_x: clip.offset_x,
+                            offset_y: clip.offset_y,
+                            rotation: clip.rotation,
+                            stretch_x: clip.stretch_x,
+                            stretch_y: clip.stretch_y,
+                        };
+                        engine_clip.opacity = clip.opacity.clamp(0.0, 1.0) as f32;
+                        engine_clip.blend = concat_core::timeline::Blend::parse(&clip.blend);
+                        engine_clip.animation = animation_of(clip);
+                    }
+                    if let Some(planned) = planned_geometry(clip) {
+                        self.built.geometry.insert(engine_clip_id, planned);
+                    } else {
+                        self.built.geometry.remove(&engine_clip_id);
+                    }
+                }
+            }
+        }
     }
 }
 

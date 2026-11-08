@@ -3191,6 +3191,7 @@ impl Studio {
         self.end_hover();
         self.playing = true;
         log::debug!("playback: playing from {:.3}s", self.playhead);
+        self.request_preview();
         self.host.playback.play(f64::from(self.playhead));
         self.wake_meters();
         // The clock is the audio device's. This looks at it far more often
@@ -3198,10 +3199,11 @@ impl Studio {
         // it changes, so each frame is asked for within a few milliseconds of
         // its time instead of whenever a fixed 30 Hz beat next comes round -
         // which at 24, 25 or 60 fps is unevenly late, and reads as judder.
-        let mut shown: Option<i64> = None;
+        let fps = self.project().active().video.rate();
+        let mut shown: Option<i64> = Some((f64::from(self.playhead) * fps + 1e-6).floor() as i64);
         self.transport.start(
             slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(8),
+            std::time::Duration::from_millis(16),
             move || {
                 crate::host::Shell::with(|shell, app| {
                     let paged = {
@@ -6061,10 +6063,16 @@ impl Studio {
             .chain(
                 self.session
                     .as_ref()
-                    .map(|session| session.project().fonts.clone())
+                    .map(|session| {
+                        session
+                            .project()
+                            .fonts
+                            .iter()
+                            .map(|font| font.family.clone())
+                            .collect::<Vec<_>>()
+                    })
                     .unwrap_or_default()
-                    .into_iter()
-                    .map(|font| font.family),
+                    .into_iter(),
             )
             .filter(|family| !family.is_empty())
             .collect();
@@ -6089,7 +6097,7 @@ impl Studio {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.installed_fonts.hash(&mut hasher);
         if let Some(session) = &self.session {
-            for font in &session.project().fonts {
+            for font in session.project().fonts.iter() {
                 font.family.hash(&mut hasher);
             }
         }
@@ -9910,55 +9918,86 @@ impl Studio {
                 source.kind,
                 model::MediaKind::Video | model::MediaKind::Image
             ) && source.time < source.duration;
-            editor.set_has_picture(has_picture);
-            editor.set_preview_clip_name(source.name.as_str().into());
-            editor.set_preview_duration(source.duration as f32);
+            if editor.get_has_picture() != has_picture {
+                editor.set_has_picture(has_picture);
+            }
+            let name: slint::SharedString = source.name.as_str().into();
+            if editor.get_preview_clip_name() != name {
+                editor.set_preview_clip_name(name);
+            }
+            let dur = source.duration as f32;
+            if (editor.get_preview_duration() - dur).abs() > 1e-4 {
+                editor.set_preview_duration(dur);
+            }
         } else {
-            editor.set_has_picture(showing.is_some());
-            editor.set_preview_clip_name(
-                showing
-                    .map(|clip| clip.name.as_str())
-                    .unwrap_or_default()
-                    .into(),
-            );
-            editor.set_preview_duration(self.duration());
+            let has_picture = showing.is_some();
+            if editor.get_has_picture() != has_picture {
+                editor.set_has_picture(has_picture);
+            }
+            let name: slint::SharedString = showing
+                .map(|clip| clip.name.as_str())
+                .unwrap_or_default()
+                .into();
+            if editor.get_preview_clip_name() != name {
+                editor.set_preview_clip_name(name);
+            }
+            let dur = self.duration();
+            if (editor.get_preview_duration() - dur).abs() > 1e-4 {
+                editor.set_preview_duration(dur);
+            }
         }
-        editor.set_playing(self.playing);
-        editor.set_playhead(self.playhead);
-        editor.set_scroll_left(self.lanes.scroll_left);
+        if editor.get_playing() != self.playing {
+            editor.set_playing(self.playing);
+        }
+        if (editor.get_playhead() - self.playhead).abs() > 1e-5 {
+            editor.set_playhead(self.playhead);
+        }
+        if (editor.get_scroll_left() - self.lanes.scroll_left).abs() > 1e-5 {
+            editor.set_scroll_left(self.lanes.scroll_left);
+        }
         self.publish_frame(app);
         if !self.selection.is_empty() {
-            sync(&models.stage, self.stage_items());
-            editor.set_selected_clip(self.selected());
-            sync_key_editor_rows(&models.key_editor_rows, self.key_editor_rows());
-            app.global::<KeyEditor>().set_at(
-                self.sole_selection()
-                    .and_then(|id| self.clip(&id))
-                    .map_or(0.0, |clip| place_in(clip, self.playhead) as f32),
-            );
-            self.publish_speed_ramp(app, models);
-            let rows = self.key_rows();
-            app.global::<Keyframes>().set_available(!rows.is_empty());
-            sync(&models.key_rows, rows);
-            if let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id))
-                && graded(clip.kind)
-            {
-                let inside = self.key_point().map(|(_, at)| at);
-                sync(
-                    &models.adjust_params,
-                    adjust_rows(&clip.video_effects, inside),
-                );
-                if let Some(package) = Catalogue::builtin().get(ADJUST_ID) {
-                    let (adjust_wheels, _) = grading_rows(
-                        package,
-                        clip.video_effects
-                            .iter()
-                            .find(|entry| entry.id == ADJUST_ID),
-                        -1,
-                        Some(inside),
-                    );
-                    sync(&models.adjust_wheels, adjust_wheels);
+            // When playing, the selection and clip parameters have not changed.
+            // Syncing complex models every frame triggers full Skia window repaints in Slint.
+            // Only update playhead-dependent markers during playback.
+            if !self.playing {
+                sync(&models.stage, self.stage_items());
+                editor.set_selected_clip(self.selected());
+                sync_key_editor_rows(&models.key_editor_rows, self.key_editor_rows());
+                self.publish_speed_ramp(app, models);
+                let rows = self.key_rows();
+                let available = !rows.is_empty();
+                if app.global::<Keyframes>().get_available() != available {
+                    app.global::<Keyframes>().set_available(available);
                 }
+                sync(&models.key_rows, rows);
+                if let Some(clip) = self.sole_selection().and_then(|id| self.clip(&id))
+                    && graded(clip.kind)
+                {
+                    let inside = self.key_point().map(|(_, at)| at);
+                    sync(
+                        &models.adjust_params,
+                        adjust_rows(&clip.video_effects, inside),
+                    );
+                    if let Some(package) = Catalogue::builtin().get(ADJUST_ID) {
+                        let (adjust_wheels, _) = grading_rows(
+                            package,
+                            clip.video_effects
+                                .iter()
+                                .find(|entry| entry.id == ADJUST_ID),
+                            -1,
+                            Some(inside),
+                        );
+                        sync(&models.adjust_wheels, adjust_wheels);
+                    }
+                }
+            }
+            let key_editor = app.global::<KeyEditor>();
+            let key_at = self.sole_selection()
+                .and_then(|id| self.clip(&id))
+                .map_or(0.0, |clip| place_in(clip, self.playhead) as f32);
+            if (key_editor.get_at() - key_at).abs() > 1e-4 {
+                key_editor.set_at(key_at);
             }
         }
     }

@@ -96,13 +96,12 @@ pub struct Titles {
 /// frame's size - 8 MB at 1080p, 33 MB at 4K - so a count cost four times
 /// as much on a 4K timeline as on an HD one. 128 MB keeps sixteen HD
 /// paintings or four 4K ones.
-const LIVE_BYTES: usize = 128 * 1024 * 1024;
+const LIVE_BYTES: usize = 256 * 1024 * 1024;
 
 /// The most the paintings of the titles on the timeline may hold between
-/// them, in bytes of pixels: 64 HD titles, or 256 at the monitor's half
-/// size. Past it the first painted are kept and the rest painted again
-/// each time; see [`LivePaintings::keep`].
-const LIVE_CEILING: usize = 512 * 1024 * 1024;
+/// them, in bytes of pixels: supports hundreds of subtitle/title clips on
+/// long timelines without cache eviction and re-rasterisation.
+const LIVE_CEILING: usize = 2048 * 1024 * 1024;
 
 /// One live painting, and the pass that last asked for it.
 struct LivePainting {
@@ -564,7 +563,7 @@ impl Titles {
     fn fonts_for<'a>(&self, project: &Project, held: &'a mut Option<Fonts>) -> &'a Fonts {
         let fonts = held.get_or_insert_with(Fonts::new);
         let mut loaded = self.loaded_files.lock().unwrap_or_else(|e| e.into_inner());
-        for font in &project.fonts {
+        for font in project.fonts.iter() {
             if !font.path.is_empty() && loaded.insert(font.path.clone()) {
                 fonts.add_file(Path::new(&font.path));
             }
@@ -603,7 +602,7 @@ fn key_of(project: &Project, painting: Painting<'_>, width: u32, height: u32) ->
     bytes.push(0);
     bytes.extend_from_slice(&width.to_le_bytes());
     bytes.extend_from_slice(&height.to_le_bytes());
-    for font in &project.fonts {
+    for font in project.fonts.iter() {
         bytes.extend_from_slice(font.family.as_bytes());
         bytes.push(0);
         bytes.extend_from_slice(font.path.as_bytes());

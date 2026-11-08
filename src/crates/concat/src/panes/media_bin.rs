@@ -235,7 +235,7 @@ impl MediaBin {
     /// Gives every media item the integer row Slint knows it by. New items
     /// get the next number; nothing is ever renumbered.
     pub fn assign_rows(&mut self, project: &Project) {
-        for item in &project.media {
+        for item in project.media.iter() {
             if !self.rows.contains_key(&item.id) {
                 self.rows.insert(item.id.clone(), self.next_row);
                 self.next_row += 1;
@@ -299,7 +299,7 @@ impl MediaBin {
         } else {
             HashSet::new()
         };
-        for item in &project.media {
+        for item in project.media.iter() {
             if !Self::shows(self.filter, item) {
                 continue;
             }

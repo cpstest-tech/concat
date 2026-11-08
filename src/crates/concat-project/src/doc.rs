@@ -179,16 +179,18 @@ fn settle(mut project: Project) -> Option<Project> {
     for key in WRITER_OWNED {
         project.extra.remove(*key);
     }
-    project.media = project
-        .media
-        .into_iter()
-        // An empty path is a template's placeholder, not a broken entry.
-        .filter(|item| !item.id.is_empty())
-        .map(MediaItem::tidy)
-        .collect();
-    let media: Vec<MediaItem> = project.media.clone();
-    project
-        .fonts
+    project.media = std::sync::Arc::new(
+        project
+            .media
+            .iter()
+            .cloned()
+            // An empty path is a template's placeholder, not a broken entry.
+            .filter(|item| !item.id.is_empty())
+            .map(MediaItem::tidy)
+            .collect(),
+    );
+    let media: Vec<MediaItem> = (*project.media).clone();
+    std::sync::Arc::make_mut(&mut project.fonts)
         .retain(|font| !font.family.is_empty() && !font.path.is_empty());
 
     let mut seen: HashSet<String> = HashSet::new();

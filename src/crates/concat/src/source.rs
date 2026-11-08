@@ -154,7 +154,7 @@ impl Studio {
         // The scratch project with the file in its bin, under an id no
         // real item has, and the one clip cut from it.
         let mut scratch = self.project().clone();
-        scratch.media.retain(|item| item.path != summary.path);
+        std::sync::Arc::make_mut(&mut scratch.media).retain(|item| item.path != summary.path);
         let mut mint = IdMint::default();
         mint.adopt_project(&scratch);
         let Ok(Some(media_id)) = commands::apply(

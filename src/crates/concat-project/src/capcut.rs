@@ -189,7 +189,7 @@ pub fn import(draft: &Draft) -> Result<Imported, CapcutError> {
         return Err(CapcutError::Empty);
     };
     project.active_timeline_id = project.timelines[0].id.clone();
-    project.media = media.items;
+    project.media = std::sync::Arc::new(media.items);
     Ok(Imported {
         project,
         settings,

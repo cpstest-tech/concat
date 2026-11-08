@@ -31,14 +31,15 @@ use concat_core::frame::Frame;
 use crate::pool::{FrameRequest, ReaderPool};
 
 /// How many frame instants the prefetcher decodes ahead of the cursor.
-/// A quarter of a second at thirty: enough that a decode never lands
+/// Half a second at thirty, quarter second at sixty: enough that a decode never lands
 /// after its frame is due, small enough that a seek wastes little.
-pub const AHEAD: u32 = 8;
+pub const AHEAD: u32 = 16;
 
 /// How far a cursor may move on from the last one, in its own direction
 /// and at its own rate, and still be the same playback: its queue is kept
-/// and added to, not thrown away. Further is a seek.
-const CONTINUES: f64 = 1.0;
+/// Timeline seconds cursor movement may jump forward and still be considered
+/// continuing playback rather than a scrub or seek.
+const CONTINUES: f64 = 0.25;
 
 /// What a job is for, most urgent first. A worker takes the most urgent
 /// job waiting; among jobs of one priority, the first queued.
@@ -150,6 +151,9 @@ struct Queue {
     background_running: usize,
     /// Proxy jobs running now: at most one.
     proxy_running: usize,
+    /// Playback jobs running now: at most one, so video frames decode in strict
+    /// monotonic forward order without contending or seeking backwards.
+    playback_running: usize,
     /// Jobs of any priority running now.
     running: usize,
     closed: bool,
@@ -173,7 +177,12 @@ impl Lane {
             if priority.background() && queue.background_running + reserve >= self.workers {
                 continue;
             }
-            if priority == Priority::Proxy && queue.proxy_running > 0 {
+            if priority == Priority::Proxy
+                && (queue.proxy_running > 0 || crate::is_playback_active())
+            {
+                continue;
+            }
+            if priority == Priority::Playback && queue.playback_running > 0 {
                 continue;
             }
             if let Some(job) = queue.lanes[priority as usize].pop_front() {
@@ -218,6 +227,7 @@ impl Prefetcher {
                 lanes: Default::default(),
                 background_running: 0,
                 proxy_running: 0,
+                playback_running: 0,
                 running: 0,
                 closed: false,
             }),
@@ -325,8 +335,12 @@ impl Prefetcher {
                 if !current() {
                     return;
                 }
+                let cursor = *lock(&shared.cursor);
+                let is_stale = cursor.as_ref().is_some_and(|now| {
+                    now.direction == Direction::Forward && moment.time < now.time
+                });
                 let slack = *lock(&shared.slack);
-                if !lock(&shared.cursor).is_some_and(|now| now.passed(moment.time, slack)) {
+                if !is_stale && !cursor.as_ref().is_some_and(|now| now.passed(moment.time, slack)) {
                     let frames: Vec<Arc<Frame>> = moment
                         .frames
                         .iter()
@@ -420,6 +434,9 @@ fn work(lane: &Lane) {
                     if taken.0 == Priority::Proxy {
                         queue.proxy_running += 1;
                     }
+                    if taken.0 == Priority::Playback {
+                        queue.playback_running += 1;
+                    }
                     break taken;
                 }
                 queue = lane
@@ -456,6 +473,9 @@ impl Drop for Finished<'_> {
         }
         if self.priority == Priority::Proxy {
             queue.proxy_running -= 1;
+        }
+        if self.priority == Priority::Playback {
+            queue.playback_running -= 1;
         }
         drop(queue);
         // A finished job frees a worker for a job the reserve was holding
@@ -494,8 +514,8 @@ mod tests {
         assert_eq!(ran.load(Ordering::SeqCst), 1, "the job after the panic ran");
         let queue = lock(&prefetcher.lane.queue);
         assert_eq!(
-            (queue.running, queue.background_running, queue.proxy_running),
-            (0, 0, 0),
+            (queue.running, queue.background_running, queue.proxy_running, queue.playback_running),
+            (0, 0, 0, 0),
             "the counters came back down"
         );
     }
@@ -805,13 +825,14 @@ mod tests {
             .map(|time| (time * fps).round() as i64)
             .collect();
         held.sort_unstable();
-        assert_eq!(held, (4..=13).collect::<Vec<_>>(), "each held once");
+        assert_eq!(held, (4..=5 + i64::from(AHEAD)).collect::<Vec<_>>(), "each held once");
 
         // A cursor far ahead: nothing held behind it survives, and an
         // instant queued for it that it has already passed is skipped -
         // asked for at a size nothing else uses, it is a fresh decode
         // afterwards, so it cannot have been prefetched.
-        let mut stale = moments(20);
+        let from_far = 20 + i64::from(AHEAD);
+        let mut stale = moments(from_far);
         stale.insert(
             0,
             Moment {
@@ -819,7 +840,7 @@ mod tests {
                 frames: vec![FrameRequest::new(&path, rate.time_of_frame(2), 8, 8)],
             },
         );
-        prefetcher.advance(cursor(20), 1.0 / fps, stale);
+        prefetcher.advance(cursor(from_far), 1.0 / fps, stale);
         prefetcher.drain();
         assert_eq!(prefetcher.held_ahead(), AHEAD as usize);
         let before = pool.stats();

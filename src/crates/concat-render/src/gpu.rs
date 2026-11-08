@@ -679,6 +679,7 @@ fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 /// One draw of a composite: the pooled texture drawn, how it meets the
 /// ground, and the pooled texture masking it - the one white pixel for a
 /// layer without a mask.
+#[derive(Clone, Copy)]
 struct Draw {
     size: (u32, u32),
     texture: usize,
@@ -791,6 +792,25 @@ fn work_format(adapter: &wgpu::Adapter) -> wgpu::TextureFormat {
         WORK
     } else {
         WORK_FALLBACK
+    }
+}
+
+/// Persistent scratch vectors for draws and quads to ensure zero heap allocations per-frame.
+struct CompositorScratch {
+    draws: Vec<Draw>,
+    vertices: Vec<Vertex>,
+    treatment_draws: Vec<Draw>,
+    treatment_vertices: Vec<Vertex>,
+}
+
+impl Default for CompositorScratch {
+    fn default() -> Self {
+        Self {
+            draws: Vec::with_capacity(64),
+            vertices: Vec::with_capacity(384),
+            treatment_draws: Vec::with_capacity(32),
+            treatment_vertices: Vec::with_capacity(192),
+        }
     }
 }
 
@@ -921,6 +941,10 @@ pub struct WgpuCompositor {
     /// The planes a YUV frame is drawn into before it is copied out, for
     /// one size and layout: luma, then the chroma.
     planes: Option<(u32, u32, concat_core::frame::Chroma, Vec<wgpu::Texture>)>,
+    /// Persistent atomic status to avoid allocating mpsc channel on every read_back.
+    readback_status: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    /// Scratch vectors reused across composites to eliminate per-frame allocations.
+    scratch: Option<CompositorScratch>,
 }
 
 impl WgpuCompositor {
@@ -1180,6 +1204,8 @@ impl WgpuCompositor {
             planar: None,
             yuv_pipelines: HashMap::new(),
             planes: None,
+            readback_status: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            scratch: Some(CompositorScratch::default()),
         }
     }
 
@@ -1636,6 +1662,8 @@ impl WgpuCompositor {
             planar: None,
             yuv_pipelines: HashMap::new(),
             planes: None,
+            readback_status: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            scratch: Some(CompositorScratch::default()),
         }
     }
 
@@ -1717,65 +1745,74 @@ impl WgpuCompositor {
     /// rest is drawn on. What comes back are the draws and quads for the
     /// final render, into whichever target the caller wants.
     fn prepare(&mut self, plan: &FramePlan) -> (Vec<Draw>, Vec<Vertex>) {
+        let mut scratch = self.scratch.take().unwrap_or_default();
+        self.prepare_into(plan, None, &mut scratch);
+        let result = (scratch.draws.clone(), scratch.vertices.clone());
+        self.scratch = Some(scratch);
+        result
+    }
+
+    /// Prepares draws and quads in-place into persistent `scratch` vectors without allocations.
+    fn prepare_into(
+        &mut self,
+        plan: &FramePlan,
+        ground: Option<usize>,
+        scratch: &mut CompositorScratch,
+    ) {
         self.output = plan.output;
         self.used.values_mut().for_each(|used| *used = 0);
         self.composites += 1;
-        self.prepare_with_ground(plan, None)
+        self.prepare_with_ground_into(plan, ground, scratch);
     }
 
-    /// [`WgpuCompositor::prepare`] starting from an optional pooled `ground`
-    /// texture already drawn during this composite, without resetting the
-    /// per-composite pool claims.
-    fn prepare_with_ground(
+    /// [`WgpuCompositor::prepare_into`] starting from an optional pooled `ground`
+    /// texture, using scratch vectors to eliminate per-frame allocations.
+    fn prepare_with_ground_into(
         &mut self,
         plan: &FramePlan,
         mut ground: Option<usize>,
-    ) -> (Vec<Draw>, Vec<Vertex>) {
+        scratch: &mut CompositorScratch,
+    ) {
         let (width, height) = (plan.width, plan.height);
         let seconds = plan.seconds();
         let mut treatments: Vec<&PlannedTreatment> = plan.treatments.iter().collect();
         treatments.sort_by_key(|treatment| treatment.track);
         let mut next = 0;
         for treatment in treatments {
-            let mut draws = Vec::new();
-            let mut vertices = Vec::new();
+            scratch.treatment_draws.clear();
+            scratch.treatment_vertices.clear();
             if let Some(index) = ground {
-                self.push_pooled(&mut draws, &mut vertices, width, height, index, 1.0);
+                self.push_pooled(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, width, height, index, 1.0);
             }
             while next < plan.layers.len() && plan.layers[next].track < treatment.track {
-                self.push_layer(&mut draws, &mut vertices, plan, &plan.layers[next]);
+                self.push_layer(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, plan, &plan.layers[next]);
                 next += 1;
             }
-            let below = self.render_pooled(width, height, &draws, &vertices, wgpu::Color::BLACK);
+            let below = self.render_pooled(width, height, &scratch.treatment_draws, &scratch.treatment_vertices, wgpu::Color::BLACK);
             let strength = treatment.strength.clamp(0.0, 1.0);
             if strength <= 0.0 || treatment.effects.is_empty() {
                 ground = Some(below);
                 continue;
             }
-            // A treatment has no single clip of its own - it runs over
-            // whatever stack sits beneath it - so `clip_time` falls back
-            // to the timeline's own clock, exactly what a package read
-            // before this existed.
             let treated = self.run_passes(width, height, below, &treatment.effects, seconds, 0.0);
             ground = Some(if strength >= 1.0 {
                 treated
             } else {
-                let mut draws = Vec::new();
-                let mut vertices = Vec::new();
-                self.push_pooled(&mut draws, &mut vertices, width, height, below, 1.0);
-                self.push_pooled(&mut draws, &mut vertices, width, height, treated, strength);
-                self.render_pooled(width, height, &draws, &vertices, wgpu::Color::BLACK)
+                scratch.treatment_draws.clear();
+                scratch.treatment_vertices.clear();
+                self.push_pooled(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, width, height, below, 1.0);
+                self.push_pooled(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, width, height, treated, strength);
+                self.render_pooled(width, height, &scratch.treatment_draws, &scratch.treatment_vertices, wgpu::Color::BLACK)
             });
         }
-        let mut draws = Vec::new();
-        let mut vertices = Vec::new();
+        scratch.draws.clear();
+        scratch.vertices.clear();
         if let Some(index) = ground {
-            self.push_pooled(&mut draws, &mut vertices, width, height, index, 1.0);
+            self.push_pooled(&mut scratch.draws, &mut scratch.vertices, width, height, index, 1.0);
         }
         for layer in &plan.layers[next..] {
-            self.push_layer(&mut draws, &mut vertices, plan, layer);
+            self.push_layer(&mut scratch.draws, &mut scratch.vertices, plan, layer);
         }
-        (draws, vertices)
     }
 
     /// One layer's draw: its picture uploaded, made and treated, its quad
@@ -2014,15 +2051,17 @@ impl WgpuCompositor {
         if self.dead {
             return None;
         }
-        let (draws, vertices) = self.prepare(plan);
-        self.write_vertices(&vertices);
+        let mut scratch = self.scratch.take().unwrap_or_default();
+        self.prepare_into(plan, None, &mut scratch);
+        self.write_vertices(&scratch.vertices);
         let (canvas, canvas_texture, canvas_view) = self.canvas(plan.width, plan.height);
         let texture = self.presentable(plan.width, plan.height);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.encode(&canvas_view, &canvas_texture, &draws, wgpu::Color::BLACK);
+        let mut encoder = self.encode(&canvas_view, &canvas_texture, &scratch.draws, wgpu::Color::BLACK);
         self.resolve(&mut encoder, (plan.width, plan.height), canvas, &view);
         self.queue.submit([encoder.finish()]);
         self.retire();
+        self.scratch = Some(scratch);
         Some(texture)
     }
 
@@ -3187,13 +3226,15 @@ impl WgpuCompositor {
         }
         let (width, height, time) = (from.width, from.height, from.seconds());
         let [from_texture, to_texture] = self.stages(width, height);
+        let mut scratch = self.scratch.take().unwrap_or_default();
         for (plan, texture) in [(from, &from_texture), (to, &to_texture)] {
-            let (draws, vertices) = self.prepare(plan);
-            self.write_vertices(&vertices);
+            self.prepare_into(plan, None, &mut scratch);
+            self.write_vertices(&scratch.vertices);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let encoder = self.encode(&view, texture, &draws, wgpu::Color::BLACK);
+            let encoder = self.encode(&view, texture, &scratch.draws, wgpu::Color::BLACK);
             self.queue.submit([encoder.finish()]);
         }
+        self.scratch = Some(scratch);
         let from_view = from_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let to_view = to_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let (canvas, _, canvas_view) = self.canvas(width, height);
@@ -3235,13 +3276,15 @@ impl WgpuCompositor {
         }
         let (width, height, time) = (from.width, from.height, from.seconds());
         let [from_texture, to_texture] = self.stages(width, height);
+        let mut scratch = self.scratch.take().unwrap_or_default();
         for (plan, texture) in [(from, &from_texture), (to, &to_texture)] {
-            let (draws, vertices) = self.prepare(plan);
-            self.write_vertices(&vertices);
+            self.prepare_into(plan, None, &mut scratch);
+            self.write_vertices(&scratch.vertices);
             let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let encoder = self.encode(&view, texture, &draws, wgpu::Color::BLACK);
+            let encoder = self.encode(&view, texture, &scratch.draws, wgpu::Color::BLACK);
             self.queue.submit([encoder.finish()]);
         }
+        self.scratch = Some(scratch);
         self.output = over.output;
         self.used.values_mut().for_each(|used| *used = 0);
         self.composites += 1;
@@ -3261,15 +3304,17 @@ impl WgpuCompositor {
             &ground_view,
         )?;
         self.queue.submit([encoder.finish()]);
-        let (draws, vertices) = self.prepare_with_ground(over, Some(ground));
-        self.write_vertices(&vertices);
+        let mut scratch = self.scratch.take().unwrap_or_default();
+        self.prepare_with_ground_into(over, Some(ground), &mut scratch);
+        self.write_vertices(&scratch.vertices);
         let (canvas, canvas_texture, canvas_view) = self.canvas(width, height);
         let out = self.presentable(width, height);
         let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.encode(&canvas_view, &canvas_texture, &draws, wgpu::Color::BLACK);
+        let mut encoder = self.encode(&canvas_view, &canvas_texture, &scratch.draws, wgpu::Color::BLACK);
         self.resolve(&mut encoder, (width, height), canvas, &out_view);
         self.queue.submit([encoder.finish()]);
         self.retire();
+        self.scratch = Some(scratch);
         Some(out)
     }
 
@@ -3757,9 +3802,13 @@ impl WgpuCompositor {
         let (width, height, padded_row) = (target.width, target.height, target.padded_row);
 
         let slice = target.staging.slice(..);
-        let (mapped_tx, mapped_rx) = std::sync::mpsc::channel();
+        self.readback_status.store(0, std::sync::atomic::Ordering::Relaxed);
+        let status = std::sync::Arc::clone(&self.readback_status);
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = mapped_tx.send(result);
+            status.store(
+                if result.is_ok() { 1 } else { 2 },
+                std::sync::atomic::Ordering::Release,
+            );
         });
         // Each way the readback fails is said: these are the lines behind
         // "the GPU device was lost", and there were none (#223).
@@ -3770,13 +3819,13 @@ impl WgpuCompositor {
             );
             return None;
         }
-        match mapped_rx.try_recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(error)) => {
-                log::error!("GPU readback: the frame's buffer would not map: {error}");
+        match self.readback_status.load(std::sync::atomic::Ordering::Acquire) {
+            1 => {}
+            2 => {
+                log::error!("GPU readback: the frame's buffer would not map");
                 return None;
             }
-            Err(_) => {
+            _ => {
                 log::error!("GPU readback: the device finished without answering the map");
                 return None;
             }
@@ -3802,10 +3851,18 @@ impl WgpuCompositor {
         // The same scopes as `render`'s, over the same calls: what the
         // device says went wrong with this frame is this frame's.
         let uncaught = self.uncaught.load(std::sync::atomic::Ordering::Relaxed);
-        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let (draws, vertices) = self.prepare(plan);
-        self.write_vertices(&vertices);
+        let debug_scopes = cfg!(debug_assertions) || std::env::var_os("CONCAT_GPU_DEBUG").is_some();
+        let scopes = if debug_scopes {
+            Some((
+                self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+                self.device.push_error_scope(wgpu::ErrorFilter::Validation),
+            ))
+        } else {
+            None
+        };
+        let mut scratch = self.scratch.take().unwrap_or_default();
+        self.prepare_into(plan, None, &mut scratch);
+        self.write_vertices(&scratch.vertices);
         let (width, height) = (plan.width, plan.height);
         self.target(width, height);
         let deep = self.delivering_hdr();
@@ -3834,28 +3891,31 @@ impl WgpuCompositor {
         let clear = wgpu::Color::BLACK;
         let submission = match yuv {
             Some(layout) => {
-                self.draw_planes(width, height, &draws, clear, &staging, &shape, layout)
+                self.draw_planes(width, height, &scratch.draws, clear, &staging, &shape, layout)
             }
             None => {
                 let padded_row = shape.planes[0].padded_row;
-                self.draw_into(width, height, &draws, clear, &staging, padded_row)
+                self.draw_into(width, height, &scratch.draws, clear, &staging, padded_row)
             }
         };
+        self.scratch = Some(scratch);
         let (mapped_tx, mapped) = std::sync::mpsc::channel();
         staging
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = mapped_tx.send(result);
             });
-        let refused = pollster::block_on(validation.pop());
-        let exhausted = pollster::block_on(memory.pop());
         let mut failed = false;
-        for error in [exhausted, refused].into_iter().flatten() {
-            log::error!(
-                "GPU composite at {:.3}s failed: {error}",
-                plan.time.as_f64()
-            );
-            failed = true;
+        if let Some((memory, validation)) = scopes {
+            let refused = pollster::block_on(validation.pop());
+            let exhausted = pollster::block_on(memory.pop());
+            for error in [exhausted, refused].into_iter().flatten() {
+                log::error!(
+                    "GPU composite at {:.3}s failed: {error}",
+                    plan.time.as_f64()
+                );
+                failed = true;
+            }
         }
         if self.uncaught.load(std::sync::atomic::Ordering::Relaxed) != uncaught {
             log::error!(
@@ -4121,21 +4181,32 @@ impl Compositor for WgpuCompositor {
         // passes' own scopes inside still catch what they catch first, and
         // what a scope misses still reaches the handler, which counts it.
         let uncaught = self.uncaught.load(std::sync::atomic::Ordering::Relaxed);
-        let memory = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let validation = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let (draws, vertices) = self.prepare(plan);
-        self.write_vertices(&vertices);
-        let frame = self.render_and_read(plan.width, plan.height, &draws);
-        let refused = pollster::block_on(validation.pop());
-        let exhausted = pollster::block_on(memory.pop());
-        let errors = [exhausted, refused].into_iter().flatten();
+        let debug_scopes = cfg!(debug_assertions) || std::env::var_os("CONCAT_GPU_DEBUG").is_some();
+        let scopes = if debug_scopes {
+            Some((
+                self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory),
+                self.device.push_error_scope(wgpu::ErrorFilter::Validation),
+            ))
+        } else {
+            None
+        };
+        let mut scratch = self.scratch.take().unwrap_or_default();
+        self.prepare_into(plan, None, &mut scratch);
+        self.write_vertices(&scratch.vertices);
+        let frame = self.render_and_read(plan.width, plan.height, &scratch.draws);
+        self.scratch = Some(scratch);
         let mut failed = frame.is_none();
-        for error in errors {
-            log::error!(
-                "GPU composite at {:.3}s failed: {error}",
-                plan.time.as_f64()
-            );
-            failed = true;
+        if let Some((memory, validation)) = scopes {
+            let refused = pollster::block_on(validation.pop());
+            let exhausted = pollster::block_on(memory.pop());
+            let errors = [exhausted, refused].into_iter().flatten();
+            for error in errors {
+                log::error!(
+                    "GPU composite at {:.3}s failed: {error}",
+                    plan.time.as_f64()
+                );
+                failed = true;
+            }
         }
         if self.uncaught.load(std::sync::atomic::Ordering::Relaxed) != uncaught {
             log::error!(

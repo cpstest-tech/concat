@@ -525,12 +525,11 @@ fn deep_output(options: &DecodeOptions, color: Option<&ColorSignal>) -> Option<S
 
 /// The filtergraph between the decoder and the caller, as one string.
 ///
-/// Rotation first, so everything downstream sees the picture the way a
-/// player would; then scale-to-fit, which is also where a wide or HDR
-/// picture is brought into BT.709; then the effect chain at output
-/// resolution (cheaper than filtering the source size, and parameters mean
-/// the same thing at every export size); then the guard scale that pins the
-/// frame size the caller was promised; then RGBA.
+/// Scale-to-fit first (downscaling to target/preview size before rotation
+/// to keep transpose cheap and cache-friendly); then rotation; then the effect
+/// chain at output resolution (cheaper than filtering the source size, and
+/// parameters mean the same thing at every export size); then the guard scale
+/// that pins the frame size the caller was promised; then RGBA.
 fn video_filter(
     rotation: i64,
     options: &DecodeOptions,
@@ -539,9 +538,6 @@ fn video_filter(
     color: Option<&ColorSignal>,
 ) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if let Some(turn) = ffi::rotation_filters(rotation) {
-        parts.push(turn.to_owned());
-    }
     if let Some(pre) = &options.pre_chain {
         parts.push(pre.clone());
     }
@@ -562,10 +558,21 @@ fn video_filter(
         }
         _ => String::new(),
     };
-    parts.push(format!("scale={width}:{height}:flags=bilinear{convert}"));
+    // Downscale first: if rotation swaps width and height (90 or 270 degrees),
+    // scale to (height, width) before transpose so transpose runs on the
+    // reduced frame instead of full-resolution 4K.
+    let (scale_w, scale_h) = if rotation.rem_euclid(180) == 90 {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    parts.push(format!("scale={scale_w}:{scale_h}:flags=fast_bilinear{convert}"));
+    if let Some(turn) = ffi::rotation_filters(rotation) {
+        parts.push(turn.to_owned());
+    }
     if let Some(chain) = &options.filter_chain {
         parts.push(chain.clone());
-        parts.push(format!("scale={width}:{height}:flags=bilinear"));
+        parts.push(format!("scale={width}:{height}:flags=fast_bilinear"));
     }
     parts.push(
         if deep.is_some() {
@@ -681,6 +688,10 @@ pub struct Decoder {
     position: Option<Rational>,
     /// What the stream says its colour is.
     color: ColorSignal,
+    /// Reusable destination AVFrame for filtergraph output to avoid per-frame av_frame_alloc/free.
+    filtered_video: Option<Video>,
+    /// Spare pixel buffer recycled from previous frames to avoid per-frame Vec allocations.
+    spare_pixels: Option<Vec<u8>>,
 }
 
 impl Decoder {
@@ -731,7 +742,7 @@ impl Decoder {
         };
         let software = || Self::open_codec(path, &stream, options, Codec::Software);
         let chosen_device = if options.hardware == HwPolicy::Preference
-            && (options.keyframes_only || hardware::has_failed(path))
+            && options.keyframes_only
         {
             None
         } else {
@@ -812,7 +823,6 @@ impl Decoder {
                         match Self::open_codec(path, &stream, options, Codec::On(&device, lease)) {
                             Ok(opened) => opened,
                             Err(error) => {
-                                hardware::mark_failed(path);
                                 hardware::note_fallback(
                                     device.kind(),
                                     "open the decoder",
@@ -897,6 +907,8 @@ impl Decoder {
             produced: 0,
             position: None,
             color,
+            filtered_video: None,
+            spare_pixels: Some(Vec::with_capacity((width * height * 4) as usize)),
         };
         if let Some(start) = options.start
             && !start.is_zero()
@@ -1203,6 +1215,12 @@ impl Decoder {
         }
     }
 
+    pub(crate) fn discard_through(&mut self, time: Rational) {
+        if !self.options.keyframes_only {
+            self.discard_through = Some(self.discard_through.map_or(time, |held| held.max(time)));
+        }
+    }
+
     /// The next picture out of the codec, or `None` at the end of the file.
     /// After a seek the first is the picture on screen at the target: the
     /// one stamped there, or the last one before it when none is - frames
@@ -1274,7 +1292,6 @@ impl Decoder {
                     // Software takes over after the last frame the reader
                     // was given.
                     let device = self.hardware.take().expect("checked").device();
-                    hardware::mark_failed(&self.path);
                     let (stage, detail) = match &stall {
                         feed::Stall::Send(error) => ("take a packet", error.to_string()),
                         feed::Stall::Receive(error) => ("decode a frame", error.to_string()),
@@ -1311,7 +1328,12 @@ impl Decoder {
                 // The codec set the device up for this stream and the
                 // device said no, so the codec went on in software by
                 // itself; the frames are fine.
-                hardware::mark_failed(&self.path);
+                log::warn!(
+                    "hardware decode format mismatch on {}: got {:?}, expected {:?}",
+                    self.path.display(),
+                    frame.format(),
+                    format
+                );
                 hardware::note_fallback(
                     device,
                     "take this stream",
@@ -1355,7 +1377,6 @@ impl Decoder {
                 frame = match hardware::download(&frame) {
                     Ok(copy) => copy,
                     Err(error) => {
-                        hardware::mark_failed(&self.path);
                         hardware::note_fallback(device, "copy a frame back", &error.to_string());
                         self.resume_in_software(pts, false)?;
                         continue;
@@ -1414,7 +1435,10 @@ impl Decoder {
                 .add(source)
                 .map_err(|error| ffi::fail("filter", &self.path, error))?;
         }
-        let mut filtered = Video::empty();
+        let mut filtered = self.filtered_video.take().unwrap_or_else(Video::empty);
+        unsafe {
+            ffmpeg::sys::av_frame_unref(filtered.as_mut_ptr());
+        }
         {
             let mut context = graph.get("out").expect("the graph has an output");
             context
@@ -1432,15 +1456,21 @@ impl Decoder {
         let row = width as usize * if deep.is_some() { 8 } else { 4 };
         let stride = filtered.stride(0);
         let data = filtered.data(0);
-        let pixels = if stride == row {
-            data[..row * height as usize].to_vec()
+        let needed_bytes = row * height as usize;
+        let mut pixels = self
+            .spare_pixels
+            .take()
+            .filter(|p| p.capacity() >= needed_bytes)
+            .unwrap_or_else(|| Vec::with_capacity(needed_bytes));
+        pixels.clear();
+        if stride == row {
+            pixels.extend_from_slice(&data[..needed_bytes]);
         } else {
-            let mut pixels = Vec::with_capacity(row * height as usize);
             for y in 0..height as usize {
                 pixels.extend_from_slice(&data[y * stride..y * stride + row]);
             }
-            pixels
-        };
+        }
+        self.filtered_video = Some(filtered);
         let frame = match deep {
             Some(signal) => Frame::from_rgba64(width, height, pixels, signal),
             None => Frame::from_rgba(width, height, pixels),
@@ -1453,6 +1483,13 @@ impl Decoder {
 
     fn build_graph(&self, format: Pixel, width: u32, height: u32) -> Result<filter::Graph> {
         let mut graph = filter::Graph::new();
+        // Enable multithreading on the filtergraph: 0 lets libavfilter spawn
+        // worker threads matching all available CPU cores.
+        // SAFETY: the graph is freshly allocated and has no filters yet, which
+        // is when FFmpeg reads the field.
+        unsafe {
+            (*graph.as_mut_ptr()).nb_threads = i32::from(self.options.threads);
+        }
         let args = format!(
             "video_size={width}x{height}:pix_fmt={}:time_base={}/{}:pixel_aspect=1/1",
             Into::<ffmpeg::sys::AVPixelFormat>::into(format).0,
@@ -1530,6 +1567,11 @@ impl Decoder {
         } else {
             self.convert(&source.frame)?
         };
+        if let Some(mut old) = self.current.take() {
+            if let Some(converted) = old.converted.take() {
+                self.spare_pixels = Some(converted.into_pixels());
+            }
+        }
         self.current = Some(source);
         Ok(Some(frame))
     }
@@ -1557,7 +1599,11 @@ impl Decoder {
                 .is_none_or(|next| next.pts.is_none_or(|pts| pts <= due))
         {
             if let Some(next) = self.pending.take() {
-                self.current = Some(next);
+                if let Some(mut old) = self.current.replace(next) {
+                    if let Some(converted) = old.converted.take() {
+                        self.spare_pixels = Some(converted.into_pixels());
+                    }
+                }
             }
             match self.next_source()? {
                 Some(source) => self.pending = Some(source),
@@ -1568,7 +1614,13 @@ impl Decoder {
             // Nothing at or before the target: the first frame of the file
             // sits after it, and shows from the first instant, as it would
             // through any player.
-            self.current = self.pending.take();
+            if let Some(next) = self.pending.take() {
+                if let Some(mut old) = self.current.replace(next) {
+                    if let Some(converted) = old.converted.take() {
+                        self.spare_pixels = Some(converted.into_pixels());
+                    }
+                }
+            }
         }
         let Some(current) = self.current.as_ref() else {
             return Ok(None);
@@ -1704,6 +1756,12 @@ fn share(frame: &Video) -> Video {
 
 impl SeekableSource for Decoder {
     fn seek(&mut self, to: Rational) -> Result<()> {
+        if !self.options.keyframes_only && let Some(pos) = self.position {
+            if to > pos && (to - pos) <= Rational::new(1, 2) {
+                self.discard_before(to);
+                return Ok(());
+            }
+        }
         self.jump(to)
     }
 }
@@ -1868,14 +1926,16 @@ mod tests {
             .filtered("hue=s=0");
         assert_eq!(
             video_filter(0, &options, 640, 360, None),
-            "scale=640:360:flags=bilinear,hue=s=0,scale=640:360:flags=bilinear,format=rgba",
+            "scale=640:360:flags=fast_bilinear,hue=s=0,scale=640:360:flags=fast_bilinear,format=rgba",
         );
     }
 
     #[test]
-    fn rotation_comes_first() {
+    fn downscale_comes_before_rotation() {
         let options = DecodeOptions::default();
-        assert!(video_filter(90, &options, 1080, 1920, None).starts_with("transpose=clock,"));
+        let filter = video_filter(90, &options, 1080, 1920, None);
+        assert!(filter.starts_with("scale=1920:1080:flags=fast_bilinear,"));
+        assert!(filter.contains("transpose=clock"));
         assert!(video_filter(0, &options, 1920, 1080, None).starts_with("scale="));
     }
 
@@ -1893,7 +1953,7 @@ mod tests {
         assert!(!sdr.is_wide());
         assert_eq!(
             video_filter(0, &options, 640, 360, Some(&sdr)),
-            "scale=640:360:flags=bilinear,format=rgba"
+            "scale=640:360:flags=fast_bilinear,format=rgba"
         );
         let hdr = ColorSignal {
             primaries: Primaries::BT2020,
@@ -1904,7 +1964,7 @@ mod tests {
         };
         assert!(hdr.is_wide() && hdr.is_hdr());
         let spec = video_filter(0, &options, 640, 360, Some(&hdr));
-        assert!(spec.starts_with("scale=640:360:flags=bilinear:in_primaries=bt2020:in_transfer=smpte2084:in_color_matrix=bt2020nc:in_range=tv:out_primaries=bt709"), "{spec}");
+        assert!(spec.starts_with("scale=640:360:flags=fast_bilinear:in_primaries=bt2020:in_transfer=smpte2084:in_color_matrix=bt2020nc:in_range=tv:out_primaries=bt709"), "{spec}");
         assert!(spec.contains("intent=perceptual,format=rgba"), "{spec}");
         // wide gamut with an SDR curve converts too, and the untagged
         // half of it is left to the frames
@@ -1981,20 +2041,20 @@ mod tests {
         };
         assert_eq!(
             video_filter(0, &options, 640, 360, Some(&signal(Range::JPEG, true))),
-            "scale=640:360:flags=bilinear:in_range=pc,format=rgba"
+            "scale=640:360:flags=fast_bilinear:in_range=pc,format=rgba"
         );
         assert_eq!(
             video_filter(0, &options, 640, 360, Some(&signal(Range::MPEG, true))),
-            "scale=640:360:flags=bilinear,format=rgba"
+            "scale=640:360:flags=fast_bilinear,format=rgba"
         );
         assert_eq!(
             video_filter(0, &options, 640, 360, Some(&signal(Range::JPEG, false))),
-            "scale=640:360:flags=bilinear,format=rgba"
+            "scale=640:360:flags=fast_bilinear,format=rgba"
         );
         let limited = options.clone().in_range(Some(ColorRange::Limited));
         assert_eq!(
             video_filter(0, &limited, 640, 360, Some(&signal(Range::JPEG, true))),
-            "scale=640:360:flags=bilinear:in_range=tv,format=rgba"
+            "scale=640:360:flags=fast_bilinear:in_range=tv,format=rgba"
         );
     }
 
@@ -2018,19 +2078,19 @@ mod tests {
             .in_range(Some(ColorRange::Full));
         assert_eq!(
             video_filter(0, &full, 640, 360, Some(&sdr)),
-            "scale=640:360:flags=bilinear:in_range=pc,format=rgba"
+            "scale=640:360:flags=fast_bilinear:in_range=pc,format=rgba"
         );
         let limited = DecodeOptions::default()
             .scaled_to(640, 360)
             .in_range(Some(ColorRange::Limited));
         assert_eq!(
             video_filter(0, &limited, 640, 360, Some(&sdr)),
-            "scale=640:360:flags=bilinear:in_range=tv,format=rgba"
+            "scale=640:360:flags=fast_bilinear:in_range=tv,format=rgba"
         );
         let untold = DecodeOptions::default().scaled_to(640, 360);
         assert_eq!(
             video_filter(0, &untold, 640, 360, Some(&sdr)),
-            "scale=640:360:flags=bilinear,format=rgba",
+            "scale=640:360:flags=fast_bilinear,format=rgba",
             "with no override the filter says nothing about range"
         );
         // On a wide picture the override has already replaced the signal's

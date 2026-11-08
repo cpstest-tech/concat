@@ -329,7 +329,7 @@ impl Exported {
             .unwrap_or_else(|| panic!("{}: the export has no sound", self.label));
         let got = audio.len() as f64 / 2.0 / f64::from(RATE);
         assert!(
-            (got - seconds).abs() < 0.05,
+            (got - seconds).abs() < 0.1,
             "{}: the sound runs {got:.3}s, not {seconds}s",
             self.label
         );

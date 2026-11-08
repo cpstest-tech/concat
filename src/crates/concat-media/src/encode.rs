@@ -639,8 +639,14 @@ fn open_video(
         let context = video.as_mut_ptr();
         (*context).color_primaries = primaries.into();
         (*context).color_trc = transfer.into();
-        if options.threads > 0 {
-            (*context).thread_count = i32::from(options.threads);
+        let threads = if options.threads > 0 {
+            i32::from(options.threads)
+        } else {
+            0
+        };
+        (*context).thread_count = threads;
+        if threads == 0 || threads > 1 {
+            (*context).thread_type = ffmpeg::sys::FF_THREAD_FRAME | ffmpeg::sys::FF_THREAD_SLICE;
         }
     }
     if global_header {
@@ -924,6 +930,10 @@ pub struct Encoder {
     /// The YUV pictures [`Encoder::write_yuv`] takes as they are, when the
     /// encoder's own pixel format is one; see [`Encoder::yuv_layout`].
     takes: Option<YuvLayout>,
+    /// Scratch RGBA buffer reused across `write_frame` calls to avoid per-frame heap allocations.
+    scratch_rgba: Option<Video>,
+    /// Scratch YUV buffer reused across `write_yuv` calls to avoid per-frame heap allocations.
+    scratch_yuv: Option<Video>,
 }
 
 /// The mastering display an HDR10 file names: a P3 display of 1000 nits
@@ -1351,6 +1361,8 @@ impl Encoder {
                 chroma,
                 full_range: options.color_range == ColorRange::Full,
             }),
+            scratch_rgba: None,
+            scratch_yuv: None,
         })
     }
 
@@ -1366,7 +1378,7 @@ impl Encoder {
     }
 
     /// Stamps a frame in the encoder's own pixel format and encodes it.
-    fn encode_converted(&mut self, mut converted: Video) -> Result<()> {
+    fn encode_converted(&mut self, converted: &mut Video) -> Result<()> {
         converted.set_pts(Some(self.written as i64));
         // The frame says what its numbers span, the same as the stream
         // does: a hardware encoder reads it off the frame.
@@ -1387,7 +1399,7 @@ impl Encoder {
             }
         }
 
-        self.send(Some(&converted))?;
+        self.send(Some(converted))?;
         self.written += 1;
         self.drain()
     }
@@ -1426,11 +1438,26 @@ impl Encoder {
         }
         let width = self.width as usize;
         let nv12 = picture.layout().chroma == Chroma::Nv12;
-        let mut video = Video::new(
-            if nv12 { Pixel::NV12 } else { Pixel::YUV420P },
-            self.width,
-            self.height,
-        );
+        let pixel = if nv12 { Pixel::NV12 } else { Pixel::YUV420P };
+        let mut video = match self.scratch_yuv.take() {
+            Some(existing)
+                if existing.format() == pixel
+                    && existing.width() == self.width
+                    && existing.height() == self.height =>
+            {
+                existing
+            }
+            _ => Video::new(pixel, self.width, self.height),
+        };
+        unsafe {
+            let raw = video.as_mut_ptr();
+            if ffmpeg::sys::av_frame_is_writable(raw) <= 0 {
+                let ret = ffmpeg::sys::av_frame_make_writable(raw);
+                if ret < 0 {
+                    return Err(ffi::fail("make_writable", &self.path, ffmpeg::Error::from(ret)));
+                }
+            }
+        }
         // Each plane row by row into the frame's own strides, which pad.
         let mut plane = |index: usize, from: &[u8], row: usize| {
             let stride = video.stride(index);
@@ -1448,7 +1475,9 @@ impl Encoder {
             plane(1, u, width / 2);
             plane(2, v, width / 2);
         }
-        self.encode_converted(video)
+        self.encode_converted(&mut video)?;
+        self.scratch_yuv = Some(video);
+        Ok(())
     }
 
     /// How many frames have been accepted so far.
@@ -1659,7 +1688,28 @@ impl FrameSink for Encoder {
         } else {
             (Pixel::RGBA, 4)
         };
-        let mut rgba = Video::new(pixel, self.width, self.height);
+        let rgba = match &mut self.scratch_rgba {
+            Some(existing)
+                if existing.format() == pixel
+                    && existing.width() == self.width
+                    && existing.height() == self.height =>
+            {
+                existing
+            }
+            slot => {
+                *slot = Some(Video::new(pixel, self.width, self.height));
+                slot.as_mut().expect("just inserted")
+            }
+        };
+        unsafe {
+            let raw = rgba.as_mut_ptr();
+            if ffmpeg::sys::av_frame_is_writable(raw) <= 0 {
+                let ret = ffmpeg::sys::av_frame_make_writable(raw);
+                if ret < 0 {
+                    return Err(ffi::fail("make_writable", &self.path, ffmpeg::Error::from(ret)));
+                }
+            }
+        }
         {
             let stride = rgba.stride(0);
             let row = self.width as usize * bytes;
@@ -1673,9 +1723,9 @@ impl FrameSink for Encoder {
         }
         let mut converted = Video::empty();
         self.scaler
-            .run(&rgba, &mut converted)
+            .run(rgba, &mut converted)
             .map_err(|error| ffi::fail("convert", &self.path, error))?;
-        self.encode_converted(converted)
+        self.encode_converted(&mut converted)
     }
 
     fn finish(&mut self) -> Result<()> {

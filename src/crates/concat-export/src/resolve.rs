@@ -20,6 +20,7 @@ pub(crate) const HIGHLIGHT: [u8; 3] = [0xcb, 0xf5, 0x3f];
 
 /// A cutout as the frame loop runs it: the masks, what to paint on them,
 /// and how a decoded pixel finds its place in the source.
+#[derive(Clone, Debug)]
 pub(crate) struct CutoutJob {
     pub(crate) store: MaskStore,
     pub(crate) cutout: Cutout,
@@ -89,6 +90,7 @@ impl CutoutJob {
 /// movement and the clip's settings when the timeline is built. Nothing
 /// is cached past that: the working out is a few milliseconds even for a
 /// long clip, and a changed setting is a rebuilt timeline anyway.
+#[derive(Clone, Debug)]
 pub(crate) struct StabilizeJob {
     correction: Correction,
 }
@@ -143,6 +145,7 @@ impl StabilizeJob {
 
 /// An engine timeline plus the per-clip facts the decoders need that the
 /// engine's model has no field for.
+#[derive(Clone, Debug)]
 pub(crate) struct BuiltTimeline {
     pub(crate) timeline: Timeline,
     /// Clips that are stills: one-frame streams, decoded looping.

@@ -16,3 +16,9 @@
 # in Cargo.toml for what it is and why it is quick.
 [alias]
 dev = "run --bin concat --profile quick"
+
+# Both sherpa-onnx-sys and ort-sys embed copies of Google Abseil C++ format internals.
+# Allow multiple definitions during link to prevent symbol collisions between static archives.
+[target.'cfg(all())']
+rustflags = ["-C", "link-arg=-Wl,--allow-multiple-definition"]
+

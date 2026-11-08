@@ -259,14 +259,23 @@ impl Monitor {
             .plan
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(entry) = slot.as_ref()
+        if let Some(entry) = slot.as_mut()
             && entry.width == spec.width
             && entry.height == spec.height
             && entry.rate == rate
             && entry.color_space == spec.color_space
-            && (Arc::ptr_eq(&entry.clips, &clips) || *entry.clips == *clips)
         {
-            return Arc::clone(&entry.plan);
+            if Arc::ptr_eq(&entry.clips, &clips) || *entry.clips == *clips {
+                return Arc::clone(&entry.plan);
+            }
+            if concat_export::same_topology(&entry.clips, &clips) {
+                let mut updated = (*entry.plan).clone();
+                updated.update_visuals(&clips);
+                let plan = Arc::new(updated);
+                entry.clips = Arc::clone(&clips);
+                entry.plan = Arc::clone(&plan);
+                return plan;
+            }
         }
         let plan = Arc::new(concat_export::preview_plan(
             &clips,

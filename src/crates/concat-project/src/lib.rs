@@ -5202,7 +5202,7 @@ mod tests {
 
         // Dodaj media item s nepostojećom pathom
         let id = "m1".to_owned();
-        project.media.push(MediaItem {
+        std::sync::Arc::make_mut(&mut project.media).push(MediaItem {
             id: id.clone(),
             path: "/does/not/exist.mp4".to_owned(),
             name: "Missing Clip".to_owned(),
@@ -5241,7 +5241,7 @@ mod tests {
             .to_string_lossy()
             .to_string();
 
-        project.media.push(MediaItem {
+        std::sync::Arc::make_mut(&mut project.media).push(MediaItem {
             id: "m2".to_owned(),
             path: existing,
             name: "Existing Clip".to_owned(),

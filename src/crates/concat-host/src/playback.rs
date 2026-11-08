@@ -836,12 +836,14 @@ impl Playback {
         }
         self.shared.stamp(position);
         self.shared.playing.store(true, Ordering::Relaxed);
+        concat_media::set_playback_active(true);
         let _ = self.tx.send(Msg::Play(position.max(0.0)));
     }
 
     /// Stops playing; the position holds.
     pub fn pause(&self) {
         self.shared.playing.store(false, Ordering::Relaxed);
+        concat_media::set_playback_active(false);
         if self.fine.swap(false, Ordering::Relaxed) {
             fine_timer(false);
         }
@@ -1426,6 +1428,11 @@ fn supervise_stream(
 ) {
     use cpal::traits::{DeviceTrait, HostTrait};
 
+    // Garbage-collection channel: drops of retired ActiveClip vectors are offloaded
+    // from the real-time audio callback to this supervisor thread to prevent heap deallocations
+    // (`free`) inside the audio thread.
+    let (gc_tx, gc_rx) = mpsc::sync_channel::<Vec<ActiveClip>>(64);
+
     // The callback drains this through a try-lock: uncontended in steady
     // state (the supervisor only takes it between streams), and a missed
     // drain on a contended tick is caught on the next callback.
@@ -1434,13 +1441,19 @@ fn supervise_stream(
     let mut reported_missing = false;
 
     loop {
+        // Drain any retired clips outside the audio callback
+        while let Ok(dropped) = gc_rx.try_recv() {
+            drop(dropped);
+        }
+
         let host = cpal::default_host();
         let built = host
             .default_output_device()
             .ok_or_else(|| "no audio output device".to_owned())
             .and_then(|device| {
                 let name = device.name().unwrap_or_default();
-                build_stream(&device, &rx, &shared, &events, &last_active).map(|s| (s, name))
+                build_stream(&device, &rx, &shared, &events, &last_active, gc_tx.clone())
+                    .map(|s| (s, name))
             });
 
         match built {
@@ -1455,7 +1468,10 @@ fn supervise_stream(
                 let failed = stream.failed;
                 let _stream = stream.stream;
                 loop {
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                    while let Ok(dropped) = gc_rx.try_recv() {
+                        drop(dropped);
+                    }
                     if failed.load(Ordering::Relaxed) {
                         report(
                             events.as_ref(),
@@ -1526,6 +1542,7 @@ fn build_stream(
     shared: &Arc<Shared>,
     events: &Arc<dyn PlaybackEvents>,
     last_active: &Arc<Mutex<Vec<ActiveClip>>>,
+    gc_tx: mpsc::SyncSender<Vec<ActiveClip>>,
 ) -> Result<BuiltStream, String> {
     use cpal::traits::DeviceTrait;
 
@@ -1537,13 +1554,13 @@ fn build_stream(
 
     match sample_format {
         cpal::SampleFormat::F32 => {
-            stream_for::<f32>(device, &config, rx, shared, events, last_active)
+            stream_for::<f32>(device, &config, rx, shared, events, last_active, gc_tx)
         }
         cpal::SampleFormat::I16 => {
-            stream_for::<i16>(device, &config, rx, shared, events, last_active)
+            stream_for::<i16>(device, &config, rx, shared, events, last_active, gc_tx)
         }
         cpal::SampleFormat::U16 => {
-            stream_for::<u16>(device, &config, rx, shared, events, last_active)
+            stream_for::<u16>(device, &config, rx, shared, events, last_active, gc_tx)
         }
         other => Err(format!("unsupported sample format {other:?}")),
     }
@@ -1556,6 +1573,7 @@ fn stream_for<T>(
     shared: &Arc<Shared>,
     events: &Arc<dyn PlaybackEvents>,
     last_active: &Arc<Mutex<Vec<ActiveClip>>>,
+    gc_tx: mpsc::SyncSender<Vec<ActiveClip>>,
 ) -> Result<BuiltStream, String>
 where
     T: cpal::SizedSample + cpal::FromSample<f32>,
@@ -1570,6 +1588,7 @@ where
     let mut clips: Vec<ActiveClip> = locked(last_active).clone();
     let mut playing = shared.playing.load(Ordering::Relaxed);
     let mut position = shared.position();
+    let mut active_indices: Vec<usize> = Vec::with_capacity(64);
 
     let failed = Arc::new(AtomicBool::new(false));
     let rx = Arc::clone(rx);
@@ -1586,7 +1605,11 @@ where
                 if let Ok(receiver) = rx.try_lock() {
                     while let Ok(message) = receiver.try_recv() {
                         match message {
-                            Msg::SetClips(next) => clips = next,
+                            Msg::SetClips(next) => {
+                                let old = std::mem::replace(&mut clips, next);
+                                // Offload deallocation to supervisor thread, avoiding heap free inside audio callback
+                                let _ = gc_tx.try_send(old);
+                            }
                             Msg::Play(at) => {
                                 position = at;
                                 playing = true;
@@ -1614,11 +1637,28 @@ where
 
                 let silent = shared.muted.load(Ordering::Relaxed);
                 let (mut loudest_left, mut loudest_right) = (0.0f32, 0.0f32);
+
+                // Pre-filter clips that intersect this output block once per callback (instead of O(N) per sample)
+                let num_frames = data.len() / channels.max(1);
+                let block_duration = num_frames as f64 * step;
+                let block_start = position;
+                let block_end = position + block_duration;
+
+                active_indices.clear();
+                for (idx, clip) in clips.iter().enumerate() {
+                    let clip_start = clip.start;
+                    let clip_end = clip.start + clip.duration;
+                    if clip_end > block_start && clip_start < block_end {
+                        active_indices.push(idx);
+                    }
+                }
+
                 for frame in data.chunks_mut(channels) {
                     let mut left = 0.0f32;
                     let mut right = 0.0f32;
 
-                    for clip in &clips {
+                    for &idx in &active_indices {
+                        let clip = &clips[idx];
                         let local = position - clip.start;
                         if local < 0.0 || local >= clip.duration {
                             continue;

@@ -1021,7 +1021,7 @@ impl IdMint {
     /// Adopts every id a restored project uses - media, timelines, tracks,
     /// clips - so nothing minted afterwards can collide with the file.
     pub fn adopt_project(&mut self, project: &Project) {
-        for item in &project.media {
+        for item in project.media.iter() {
             self.adopt(&item.id);
         }
         for timeline in &project.timelines {

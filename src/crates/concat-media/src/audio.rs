@@ -566,7 +566,17 @@ fn opus_encoder() -> Result<(&'static str, Sample)> {
 ///
 /// Every clip's file must contain an audio stream; see [`mix_graph`].
 pub fn mix_to_file(clips: &[AudioClip], duration: f64, destination: &Path) -> Result<()> {
-    mix_to_file_with(clips, &[], duration, destination)
+    mix_to_file_cancellable(clips, duration, destination, None)
+}
+
+/// [`mix_to_file`] with a cancellation flag checked during processing.
+pub fn mix_to_file_cancellable(
+    clips: &[AudioClip],
+    duration: f64,
+    destination: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    mix_to_file_with_cancellable(clips, &[], duration, destination, cancel)
 }
 
 /// [`mix_to_file`] with sound layers over the mix; see [`AudioBus`].
@@ -575,6 +585,17 @@ pub fn mix_to_file_with(
     buses: &[AudioBus],
     duration: f64,
     destination: &Path,
+) -> Result<()> {
+    mix_to_file_with_cancellable(clips, buses, duration, destination, None)
+}
+
+/// [`mix_to_file_with`] with a cancellation flag checked during processing.
+pub fn mix_to_file_with_cancellable(
+    clips: &[AudioClip],
+    buses: &[AudioBus],
+    duration: f64,
+    destination: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     let extension = destination
         .extension()
@@ -684,6 +705,7 @@ pub fn mix_to_file_with(
         mix_format.name(),
         Some(frame_size),
         destination,
+        cancel,
         |mixed| {
             encoder
                 .send_frame(mixed)
@@ -734,6 +756,7 @@ pub fn mix_pcm(
         "s16",
         None,
         Path::new("the mix"),
+        None,
         |mixed| {
             // Packed: one plane, two channels of two bytes a sample. The
             // plane can be padded past the samples, so it is cut to them.
@@ -755,6 +778,7 @@ fn run_mix(
     format: &str,
     frame_size: Option<u32>,
     destination: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
     mut take: impl FnMut(&Audio) -> Result<()>,
 ) -> Result<()> {
     let (from, to) = window;
@@ -914,6 +938,9 @@ fn run_mix(
             .map_err(|error| ffi::fail("filter", &inputs[index].path, error))?;
     }
     'mix: loop {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err(Error::Cancelled);
+        }
         // Pull everything the sink has.
         loop {
             let mut mixed = Audio::empty();

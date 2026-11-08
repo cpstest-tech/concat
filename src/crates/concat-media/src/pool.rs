@@ -58,9 +58,8 @@ const ROLL_FORWARD_FRAMES: i64 = 60;
 const READER_THREADS: u16 = 8;
 
 /// Warm readers one file at one level may hold: enough for the two sides of
-/// a transition within a file and a scrub elsewhere in it, few enough that
-/// a 4K file does not hold a decoder per playback worker.
-const READERS_PER_KEY: usize = 3;
+/// a transition within a file, few enough that a 4K file does not thrash GPU decoders.
+const READERS_PER_KEY: usize = 2;
 
 /// What one frame request asks for; see [`ReaderPool::frame`].
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -222,30 +221,58 @@ struct TreatedKey {
     baked: bool,
 }
 
-/// A byte-budgeted LRU of decoded frames.
+/// Key that exposes an optional frame index to allow playhead-aware cache eviction.
+pub trait CacheKey: Hash + Eq + Clone {
+    /// Frame index in the underlying media stream, if applicable.
+    fn frame_index(&self) -> Option<i64> {
+        None
+    }
+}
+
+impl CacheKey for SourceKey {
+    fn frame_index(&self) -> Option<i64> {
+        Some(self.index)
+    }
+}
+
+impl CacheKey for TreatedKey {
+    fn frame_index(&self) -> Option<i64> {
+        Some(self.source.index)
+    }
+}
+
+/// A byte-budgeted LRU and playhead-distance-aware cache of decoded frames.
 ///
 /// Plain and measurable on purpose: a `HashMap` plus a logical clock, evicting
-/// the least-recently-touched frame until the budget holds. At preview sizes a
-/// frame is ~2-4 MB, so the default budget holds a few hundred frames - many
-/// seconds of scrub history.
+/// frames furthest from the playhead (or least-recently-touched) until the budget holds.
+/// At preview sizes a frame is ~2-4 MB, so the default budget holds a few hundred frames -
+/// many seconds of scrub history.
 pub struct FrameCache<K> {
     budget: usize,
     held: usize,
     tick: u64,
+    playhead_index: Option<i64>,
     frames: HashMap<K, (Arc<Frame>, u64)>,
     order: std::collections::BTreeMap<u64, K>,
 }
 
-impl<K: Hash + Eq + Clone> FrameCache<K> {
+impl<K: CacheKey> FrameCache<K> {
     /// An empty cache holding at most `budget` bytes of frames.
     pub fn new(budget: usize) -> Self {
         Self {
             budget,
             held: 0,
             tick: 0,
+            playhead_index: None,
             frames: HashMap::new(),
             order: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Updates the current playhead position to prioritize keeping frames
+    /// near the current playback or scrubbing head.
+    pub fn set_playhead_index(&mut self, index: Option<i64>) {
+        self.playhead_index = index;
     }
 
     fn get(&mut self, key: &K) -> Option<Arc<Frame>> {
@@ -280,9 +307,34 @@ impl<K: Hash + Eq + Clone> FrameCache<K> {
         self.shrink_to(self.budget);
     }
 
-    /// Lets the least recently used frames go until at most `keep` bytes
-    /// are held.
+    /// Lets frames go until at most `keep` bytes are held.
+    /// Furthest frames from the current playhead are evicted first.
     fn shrink_to(&mut self, keep: usize) {
+        if self.held <= keep {
+            return;
+        }
+        if let Some(playhead) = self.playhead_index {
+            while self.held > keep && !self.frames.is_empty() {
+                let doomed = self
+                    .frames
+                    .iter()
+                    .filter(|(_, (_, tick))| self.tick.saturating_sub(*tick) > 16)
+                    .max_by_key(|(k, (_, tick))| {
+                        let dist = k.frame_index().map_or(0, |idx| (idx - playhead).abs());
+                        (dist, u64::MAX - *tick)
+                    })
+                    .map(|(k, _)| k.clone());
+
+                if let Some(key) = doomed {
+                    if let Some((evicted, old_tick)) = self.frames.remove(&key) {
+                        self.held -= evicted.pixels().len();
+                        self.order.remove(&old_tick);
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
         while self.held > keep {
             let Some((_, oldest)) = self.order.pop_first() else {
                 break;
@@ -339,8 +391,12 @@ enum Access {
 }
 
 fn plan_access(current_next: Option<i64>, target: i64) -> Access {
+    plan_access_with_limit(current_next, target, ROLL_FORWARD_FRAMES)
+}
+
+fn plan_access_with_limit(current_next: Option<i64>, target: i64, limit: i64) -> Access {
     match current_next {
-        Some(next) if target >= next && target - next <= ROLL_FORWARD_FRAMES => {
+        Some(next) if target >= next && target - next <= limit => {
             Access::Roll(target - next)
         }
         _ => Access::Seek,
@@ -485,7 +541,8 @@ impl Reader {
     }
 
     fn skip_before(&mut self, rate: FrameRate, index: i64) {
-        self.decoder.discard_before(rate.time_of_frame(index));
+        let boundary = rate.time_of_frame(index) - rate.frame_duration() / Rational::from_int(2);
+        self.decoder.discard_through(boundary);
     }
 
     /// The frame on screen at `target` when no frame has that index: the
@@ -887,21 +944,27 @@ impl ReaderPool {
     }
 
     fn cached_source(&self, key: &SourceKey) -> Option<Arc<Frame>> {
-        self.sources.lock().ok()?.get(key)
+        let mut cache = self.sources.lock().ok()?;
+        cache.set_playhead_index(Some(key.index));
+        cache.get(key)
     }
 
     fn remember_source(&self, key: SourceKey, frame: Arc<Frame>) {
         if let Ok(mut cache) = self.sources.lock() {
+            cache.set_playhead_index(Some(key.index));
             cache.insert(key, frame);
         }
     }
 
     fn cached_treated(&self, key: &TreatedKey) -> Option<Arc<Frame>> {
-        self.treated.lock().ok()?.get(key)
+        let mut cache = self.treated.lock().ok()?;
+        cache.set_playhead_index(Some(key.source.index));
+        cache.get(key)
     }
 
     fn remember_treated(&self, key: TreatedKey, frame: Arc<Frame>) {
         if let Ok(mut cache) = self.treated.lock() {
+            cache.set_playhead_index(Some(key.source.index));
             cache.insert(key, frame);
         }
     }
@@ -1330,12 +1393,16 @@ impl ReaderPool {
             self.remember_source(key.clone(), Arc::clone(&frame));
             return Ok(frame);
         }
+        let t_reader_start = std::time::Instant::now();
         let shared = self.reader(
             path, key.width, key.height, None, None, key.range, key.deep, facts, key.index, false,
         )?;
+        let d_reader = t_reader_start.elapsed();
+        let t_lock_start = std::time::Instant::now();
         let mut reader = shared.lock().map_err(|_| crate::error::Error::NoFrame {
             path: path.to_path_buf(),
         })?;
+        let d_lock = t_lock_start.elapsed();
         // Another caller may have moved this reader while this one waited
         // for it; the answer may even be cached by now.
         if let Some(frame) = self.cached_source(key) {
@@ -1351,6 +1418,11 @@ impl ReaderPool {
         };
         let begun = std::time::Instant::now();
         let found = self.pull(&mut reader, facts, key.index, &remember)?;
+        let d_pull = begun.elapsed();
+        log::info!(
+            "PERF source_frame idx {}: reader {:?}, lock {:?}, pull {:?}",
+            key.index, d_reader, d_lock, d_pull
+        );
         if passed.get() > 0
             && let Ok(mut pace) = self.pace.lock()
         {
@@ -1375,15 +1447,20 @@ impl ReaderPool {
         target: i64,
         remember: &dyn Fn(i64, Arc<Frame>),
     ) -> Result<Option<Arc<Frame>>> {
-        let rate = facts.rate;
-        let next = (reader.next_index != i64::MIN).then_some(reader.next_index);
-        if !facts.still {
-            match plan_access(next, target) {
-                Access::Seek => reader.seek(rate, target)?,
-                Access::Roll(ahead) if ahead > 4 => {
-                    reader.skip_before(rate, target - 1);
-                }
-                Access::Roll(_) => {}
+        if let Some((last_idx, ref frame)) = reader.last {
+            if last_idx == target {
+                remember(target, Arc::clone(frame));
+                return Ok(Some(Arc::clone(frame)));
+            }
+        }
+
+        if let Some((ahead_idx, ref frame)) = reader.ahead {
+            if ahead_idx == target {
+                let frame = Arc::clone(frame);
+                remember(target, Arc::clone(&frame));
+                reader.last = reader.ahead.take();
+                reader.next_index = target + 1;
+                return Ok(Some(frame));
             }
         }
 
@@ -1391,6 +1468,35 @@ impl ReaderPool {
             remember(target, Arc::clone(&frame));
             reader.next_index = target + 1;
             return Ok(Some(frame));
+        }
+
+        let rate = facts.rate;
+        let next = (reader.next_index != i64::MIN)
+            .then_some(reader.next_index)
+            .or_else(|| reader.last.as_ref().map(|(idx, _)| idx + 1));
+        if !facts.still {
+            let max_roll = (facts.rate.fps().as_f64() * 1.5).round().max(60.0) as i64;
+            match plan_access_with_limit(next, target, max_roll) {
+                Access::Seek => {
+                    if let Some(n) = next
+                        && target < n
+                        && crate::is_playback_active()
+                    {
+                        log::warn!(
+                            "pull: refusing backward seek during active playback (target {} < next {}), dropping stale frame",
+                            target, n
+                        );
+                        return Ok(None);
+                    }
+                    let t_seek = std::time::Instant::now();
+                    reader.seek(rate, target)?;
+                    log::debug!("pull: seek to target {} (next was {:?}) took {:?}", target, next, t_seek.elapsed());
+                }
+                Access::Roll(ahead) if ahead > 0 => {
+                    reader.skip_before(rate, target);
+                }
+                Access::Roll(_) => {}
+            }
         }
 
         // Roll forward to the target, caching everything passed on the way.
@@ -1402,10 +1508,13 @@ impl ReaderPool {
         // one past is kept for the reader to hand out next. Answering with
         // the frame past showed a recording's next movement up to the
         // length of the pause early (#457).
+        let t_loop = std::time::Instant::now();
+        let mut decode_count = 0;
         let mut latest: Option<Arc<Frame>> = None;
         let mut reached = i64::MIN;
         while let Some((index, frame, fresh)) = reader.next_frame(rate)? {
             if fresh {
+                decode_count += 1;
                 Self::count(&self.counters.decoded);
                 remember(index, Arc::clone(&frame));
             }
@@ -1416,6 +1525,7 @@ impl ReaderPool {
                 reader.ahead = Some((index, frame));
                 reader.next_index = target + 1;
                 remember(target, Arc::clone(&held));
+                log::info!("PERF pull: loop decoded {} frames, took {:?}", decode_count, t_loop.elapsed());
                 return Ok(Some(held));
             }
             reader.last = Some((index, Arc::clone(&frame)));
@@ -1425,6 +1535,7 @@ impl ReaderPool {
                 break;
             }
         }
+        log::info!("PERF pull: loop finished decoded {} frames, reached {}, took {:?}", decode_count, reached, t_loop.elapsed());
         // The stream ended short of the target: the last frame is the
         // answer, and it is remembered under the index asked for, so a
         // container that claims a frame more than it holds does not cost a

@@ -544,7 +544,7 @@ mod mask_upgrade_tests {
 
     fn with_link(link: AppliedFilter, size: (u32, u32)) -> Editor {
         let mut editor = Editor::new();
-        editor.project.media.push(crate::model::MediaItem {
+        std::sync::Arc::make_mut(&mut editor.project.media).push(crate::model::MediaItem {
             id: "m1".into(),
             width: Some(size.0),
             height: Some(size.1),
