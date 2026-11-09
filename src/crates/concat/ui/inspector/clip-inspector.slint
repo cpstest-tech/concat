@@ -1024,6 +1024,187 @@ export component BackgroundRows inherits VerticalLayout {
     }
 }
 
+export struct AnimationCardData {
+    id: string,
+    label: string,
+}
+
+export component AnimationCard inherits Rectangle {
+    in property <string> anim-id;
+    in property <string> label;
+    in property <bool> active;
+    in property <bool> is-text;
+    callback clicked();
+
+    property <float> hover-t: touch.has-hover ? 1.0 : 0.0;
+    animate hover-t { duration: 1.2s; easing: ease-in-out; iteration-count: -1; }
+
+    tile := Rectangle {
+        y: 0;
+        height: root.width * 0.85;
+        border-radius: Theme.r;
+        background: root.active ? Theme.field-active : (touch.has-hover ? Theme.field-hover : Theme.field);
+        border-width: root.active ? 2px : 1px;
+        border-color: root.active ? #00c4cc : (touch.has-hover ? Theme.line-strong : Theme.line);
+        clip: true;
+
+        animate background, border-color { duration: 100ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+
+        // None state (circle with diagonal slash)
+        if root.anim-id == "": Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            border-width: 1.5px;
+            border-color: root.active ? #00c4cc : Theme.fg-muted;
+
+            Rectangle {
+                x: 3px;
+                y: 10px;
+                width: 14px;
+                height: 1.5px;
+                background: root.active ? #00c4cc : Theme.fg-muted;
+            }
+        }
+
+        // Active animation preview object
+        if root.anim-id != "": frame := Rectangle {
+            width: parent.width * 0.65 * (
+                (root.anim-id == "zoom-in") ? (touch.has-hover ? (0.35 + root.hover-t * 0.65) : 0.85)
+                : (root.anim-id == "zoom-out") ? (touch.has-hover ? (1.0 - root.hover-t * 0.65) : 0.85)
+                : (root.anim-id == "pop") ? (touch.has-hover ? (root.hover-t < 0.6 ? 0.35 + root.hover-t * 1.3 : 1.13 - (root.hover-t - 0.6) * 0.32) : 0.85)
+                : (root.anim-id == "rotate-in") ? (touch.has-hover ? (0.35 + root.hover-t * 0.65) : 0.85)
+                : (root.anim-id == "rotate-out") ? (touch.has-hover ? (1.0 - root.hover-t * 0.65) : 0.85)
+                : (root.anim-id == "ken-burns") ? (touch.has-hover ? (0.8 + root.hover-t * 0.28) : 0.85)
+                : (root.anim-id == "pulse") ? (touch.has-hover ? (0.8 + 0.25 * Math.sin(root.hover-t * 6.283)) : 0.85)
+                : ((root.anim-id == "typewriter" || root.anim-id == "word-reveal" || root.anim-id == "character-reveal") && touch.has-hover) ? (0.2 + root.hover-t * 0.75)
+                : ((root.anim-id == "typewriter-reverse" || root.anim-id == "word-exit" || root.anim-id == "character-exit") && touch.has-hover) ? (0.95 - root.hover-t * 0.75)
+                : 0.85
+            );
+            height: parent.height * 0.52 * (
+                (root.anim-id == "zoom-in") ? (touch.has-hover ? (0.35 + root.hover-t * 0.65) : 0.85)
+                : (root.anim-id == "zoom-out") ? (touch.has-hover ? (1.0 - root.hover-t * 0.65) : 0.85)
+                : (root.anim-id == "pop") ? (touch.has-hover ? (root.hover-t < 0.6 ? 0.35 + root.hover-t * 1.3 : 1.13 - (root.hover-t - 0.6) * 0.32) : 0.85)
+                : (root.anim-id == "ken-burns") ? (touch.has-hover ? (0.8 + root.hover-t * 0.28) : 0.85)
+                : (root.anim-id == "pulse") ? (touch.has-hover ? (0.8 + 0.25 * Math.sin(root.hover-t * 6.283)) : 0.85)
+                : 0.85
+            );
+            x: (parent.width - self.width) / 2 + (
+                (root.anim-id == "slide-left") ? (touch.has-hover ? (1.0 - root.hover-t) * 22px : 0px)
+                : (root.anim-id == "slide-right") ? (touch.has-hover ? (- (1.0 - root.hover-t) * 22px) : 0px)
+                : (root.anim-id == "ken-burns") ? (touch.has-hover ? (root.hover-t * 8px - 4px) : 0px)
+                : (root.anim-id == "oscillate" || root.anim-id == "shake") ? (touch.has-hover ? Math.sin(root.hover-t * 26.0) * 5px : 0px)
+                : (root.anim-id == "wave-loop") ? (touch.has-hover ? Math.sin(root.hover-t * 6.283) * 5px : 0px)
+                : 0px
+            );
+            y: (parent.height - self.height) / 2 + (
+                (root.anim-id == "slide-up") ? (touch.has-hover ? (1.0 - root.hover-t) * 18px : 0px)
+                : (root.anim-id == "slide-down") ? (touch.has-hover ? (- (1.0 - root.hover-t) * 18px) : 0px)
+                : (root.anim-id == "float") ? (touch.has-hover ? Math.sin(root.hover-t * 6.283) * 5px : 0px)
+                : (root.anim-id == "wave-loop") ? (touch.has-hover ? Math.cos(root.hover-t * 6.283) * 3px : 0px)
+                : 0px
+            );
+            border-radius: 4px;
+            background: root.is-text ? Theme.kind-text-well : @linear-gradient(135deg, #2b5876 0%, #4e4376 100%);
+            clip: true;
+            opacity: (root.anim-id == "fade-in") ? (touch.has-hover ? root.hover-t : 1.0)
+                : (root.anim-id == "fade-out") ? (touch.has-hover ? (1.0 - root.hover-t) : 1.0)
+                : 1.0;
+
+            // Inner graphic
+            if !root.is-text: Rectangle {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 12px;
+                height: 12px;
+                border-radius: 6px;
+                background: #00c4cc88;
+            }
+
+            if root.is-text: Text {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                text: "T";
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.kind-text;
+            }
+
+            // Typing cursor line for typewriter
+            if (root.anim-id == "typewriter" || root.anim-id == "word-reveal") && touch.has-hover: Rectangle {
+                x: parent.width - 2px;
+                y: 2px;
+                width: 2px;
+                height: parent.height - 4px;
+                background: #ffffff;
+            }
+        }
+
+        // Active checkmark badge (CapCut style top right)
+        if root.active: Rectangle {
+            x: parent.width - 15px;
+            y: 3px;
+            width: 12px;
+            height: 12px;
+            border-radius: 6px;
+            background: #00c4cc;
+
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                glyph: Glyph.check;
+                size: 8px;
+                tint: #ffffff;
+            }
+        }
+    }
+
+    Text {
+        y: tile.height + 4px;
+        width: root.width;
+        height: 14px;
+        text: root.label;
+        color: root.active ? Theme.fg : Theme.fg-muted;
+        font-size: Theme.fs-xs;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component AnimationGrid inherits Rectangle {
+    in property <[AnimationCardData]> items;
+    in property <string> active-id;
+    in property <bool> is-text;
+    callback selected(id: string);
+
+    property <length> gap: 6px;
+    property <length> min-card: 68px;
+    property <int> cols: Math.max(2, Math.floor((root.width + root.gap) / (root.min-card + root.gap)));
+    property <length> card-w: (root.width - (root.cols - 1) * root.gap) / root.cols;
+    property <length> card-h: root.card-w * 0.85 + 4px + 14px;
+    property <int> rows: Math.ceil(root.items.length / root.cols);
+
+    height: root.rows > 0 ? root.rows * (root.card-h + root.gap) - root.gap : 0px;
+
+    for entry[index] in root.items: AnimationCard {
+        x: Math.mod(index, root.cols) * (root.card-w + root.gap);
+        y: Math.floor(index / root.cols) * (root.card-h + root.gap);
+        width: root.card-w;
+        height: root.card-h;
+        anim-id: entry.id;
+        label: entry.label;
+        active: root.active-id == entry.id;
+        is-text: root.is-text;
+        clicked => { root.selected(entry.id); }
+    }
+}
+
 /// Video: how the picture sits in the frame, how solid it is, and whether
 /// its background is keyed out.
 export component VideoPanel inherits VerticalLayout {
@@ -1182,6 +1363,72 @@ export component VideoPanel inherits VerticalLayout {
         I18n.t("clipInspector.darken")
     ];
 
+    property <[AnimationCardData]> anims-in-video: [
+        { id: "", label: I18n.t("common.none") },
+        { id: "fade-in", label: I18n.t("clipInspector.animationFade") },
+        { id: "slide-left", label: I18n.t("clipInspector.animationSlideLeft") },
+        { id: "slide-right", label: I18n.t("clipInspector.animationSlideRight") },
+        { id: "slide-up", label: I18n.t("clipInspector.animationSlideUp") },
+        { id: "slide-down", label: I18n.t("clipInspector.animationSlideDown") },
+        { id: "zoom-in", label: I18n.t("clipInspector.animationZoom") },
+        { id: "pop", label: I18n.t("clipInspector.animationPop") },
+        { id: "rotate-in", label: I18n.t("clipInspector.animationRotate") },
+    ];
+    property <[AnimationCardData]> anims-in-text: [
+        { id: "", label: I18n.t("common.none") },
+        { id: "fade-in", label: I18n.t("clipInspector.animationFade") },
+        { id: "word-reveal", label: I18n.t("clipInspector.animationWordReveal") },
+        { id: "character-reveal", label: I18n.t("clipInspector.animationCharacterReveal") },
+        { id: "typewriter", label: I18n.t("clipInspector.animationTypewriter") },
+        { id: "slide-left", label: I18n.t("clipInspector.animationSlideLeft") },
+        { id: "slide-right", label: I18n.t("clipInspector.animationSlideRight") },
+        { id: "slide-up", label: I18n.t("clipInspector.animationSlideUp") },
+        { id: "slide-down", label: I18n.t("clipInspector.animationSlideDown") },
+        { id: "zoom-in", label: I18n.t("clipInspector.animationZoom") },
+        { id: "pop", label: I18n.t("clipInspector.animationPop") },
+        { id: "rotate-in", label: I18n.t("clipInspector.animationRotate") },
+    ];
+    property <[AnimationCardData]> anims-out-video: [
+        { id: "", label: I18n.t("common.none") },
+        { id: "fade-out", label: I18n.t("clipInspector.animationFade") },
+        { id: "slide-left", label: I18n.t("clipInspector.animationSlideLeft") },
+        { id: "slide-right", label: I18n.t("clipInspector.animationSlideRight") },
+        { id: "slide-up", label: I18n.t("clipInspector.animationSlideUp") },
+        { id: "slide-down", label: I18n.t("clipInspector.animationSlideDown") },
+        { id: "zoom-out", label: I18n.t("clipInspector.animationZoomOut") },
+        { id: "rotate-out", label: I18n.t("clipInspector.animationRotate") },
+    ];
+    property <[AnimationCardData]> anims-out-text: [
+        { id: "", label: I18n.t("common.none") },
+        { id: "fade-out", label: I18n.t("clipInspector.animationFade") },
+        { id: "word-exit", label: I18n.t("clipInspector.animationWordExit") },
+        { id: "character-exit", label: I18n.t("clipInspector.animationCharacterExit") },
+        { id: "typewriter-reverse", label: I18n.t("clipInspector.animationTypewriterReverse") },
+        { id: "slide-left", label: I18n.t("clipInspector.animationSlideLeft") },
+        { id: "slide-right", label: I18n.t("clipInspector.animationSlideRight") },
+        { id: "slide-up", label: I18n.t("clipInspector.animationSlideUp") },
+        { id: "slide-down", label: I18n.t("clipInspector.animationSlideDown") },
+        { id: "zoom-out", label: I18n.t("clipInspector.animationZoomOut") },
+        { id: "rotate-out", label: I18n.t("clipInspector.animationRotate") },
+    ];
+    property <[AnimationCardData]> anims-combo-video: [
+        { id: "", label: I18n.t("common.none") },
+        { id: "ken-burns", label: I18n.t("clipInspector.animationKenBurns") },
+        { id: "pulse", label: I18n.t("clipInspector.animationPulse") },
+        { id: "oscillate", label: I18n.t("clipInspector.animationOscillate") },
+        { id: "float", label: I18n.t("clipInspector.animationFloat") },
+        { id: "shake", label: I18n.t("clipInspector.animationShake") },
+    ];
+    property <[AnimationCardData]> anims-combo-text: [
+        { id: "", label: I18n.t("common.none") },
+        { id: "wave-loop", label: I18n.t("clipInspector.animationWaveLoop") },
+        { id: "pulse", label: I18n.t("clipInspector.animationPulse") },
+        { id: "oscillate", label: I18n.t("clipInspector.animationOscillate") },
+        { id: "float", label: I18n.t("clipInspector.animationFloat") },
+        { id: "shake", label: I18n.t("clipInspector.animationShake") },
+        { id: "ken-burns", label: I18n.t("clipInspector.animationKenBurns") },
+    ];
+
     init => { root.seed(); }
     changed selected => { root.seed(); }
 
@@ -1192,47 +1439,55 @@ export component VideoPanel inherits VerticalLayout {
             summary: root.active-animation == "" ? I18n.t("common.none") : root.active-animation;
         }
         if animations-header.open: SectionBody {
+            // CapCut In / Out / Combo Sub-Tabs
             HorizontalLayout {
                 padding-left: Theme.pad;
                 padding-right: Theme.pad;
-                spacing: 4px;
-                Button { label: I18n.t("clipInspector.animationIn"); primary: root.animation-tab == 0; clicked => { root.animation-tab = 0; } }
-                Button { label: I18n.t("clipInspector.animationOut"); primary: root.animation-tab == 1; clicked => { root.animation-tab = 1; } }
-                Button { label: I18n.t("clipInspector.animationCombo"); primary: root.animation-tab == 2; clicked => { root.animation-tab = 2; } }
+                spacing: 6px;
+                height: 30px;
+
+                for tab-name[idx] in [I18n.t("clipInspector.animationIn"), I18n.t("clipInspector.animationOut"), I18n.t("clipInspector.animationCombo")]: Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: Theme.r-sm;
+                    background: root.animation-tab == idx ? #00c4cc : (tab-touch.has-hover ? Theme.field-hover : Theme.field);
+                    animate background { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+
+                    Text {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        text: tab-name;
+                        color: root.animation-tab == idx ? #ffffff : (tab-touch.has-hover ? Theme.fg : Theme.fg-muted);
+                        font-size: Theme.fs-sm;
+                        font-weight: root.animation-tab == idx ? Theme.weight-title : 400;
+                    }
+
+                    tab-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.animation-tab = idx; }
+                    }
+                }
             }
+
+            // CapCut-style Animated Grid
             VerticalLayout {
                 padding-left: Theme.pad;
                 padding-right: Theme.pad;
-                spacing: 4px;
-                Button { label: I18n.t("common.none"); block: true; primary: root.active-animation == ""; clicked => { root.animation-set(root.animation-tab, "", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationFade"); primary: root.active-animation == "fade-in"; clicked => { root.animation-set(0, "fade-in", 0.5); } }
-                if root.animation-tab == 0 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationWordReveal"); primary: root.active-animation == "word-reveal"; clicked => { root.animation-set(0, "word-reveal", 0.6); } }
-                if root.animation-tab == 0 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationCharacterReveal"); primary: root.active-animation == "character-reveal"; clicked => { root.animation-set(0, "character-reveal", 0.6); } }
-                if root.animation-tab == 0 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationTypewriter"); primary: root.active-animation == "typewriter"; clicked => { root.animation-set(0, "typewriter", 0.8); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideLeft"); primary: root.active-animation == "slide-left"; clicked => { root.animation-set(0, "slide-left", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideRight"); primary: root.active-animation == "slide-right"; clicked => { root.animation-set(0, "slide-right", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideUp"); primary: root.active-animation == "slide-up"; clicked => { root.animation-set(0, "slide-up", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationSlideDown"); primary: root.active-animation == "slide-down"; clicked => { root.animation-set(0, "slide-down", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationZoom"); primary: root.active-animation == "zoom-in"; clicked => { root.animation-set(0, "zoom-in", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationPop"); primary: root.active-animation == "pop"; clicked => { root.animation-set(0, "pop", 0.5); } }
-                if root.animation-tab == 0: Button { label: I18n.t("clipInspector.animationRotate"); primary: root.active-animation == "rotate-in"; clicked => { root.animation-set(0, "rotate-in", 0.5); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationFade"); primary: root.active-animation == "fade-out"; clicked => { root.animation-set(1, "fade-out", 0.5); } }
-                if root.animation-tab == 1 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationWordExit"); primary: root.active-animation == "word-exit"; clicked => { root.animation-set(1, "word-exit", 0.6); } }
-                if root.animation-tab == 1 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationCharacterExit"); primary: root.active-animation == "character-exit"; clicked => { root.animation-set(1, "character-exit", 0.6); } }
-                if root.animation-tab == 1 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationTypewriterReverse"); primary: root.active-animation == "typewriter-reverse"; clicked => { root.animation-set(1, "typewriter-reverse", 0.8); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideLeft"); primary: root.active-animation == "slide-left"; clicked => { root.animation-set(1, "slide-left", 0.5); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideRight"); primary: root.active-animation == "slide-right"; clicked => { root.animation-set(1, "slide-right", 0.5); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideUp"); primary: root.active-animation == "slide-up"; clicked => { root.animation-set(1, "slide-up", 0.5); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationSlideDown"); primary: root.active-animation == "slide-down"; clicked => { root.animation-set(1, "slide-down", 0.5); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationZoomOut"); primary: root.active-animation == "zoom-out"; clicked => { root.animation-set(1, "zoom-out", 0.5); } }
-                if root.animation-tab == 1: Button { label: I18n.t("clipInspector.animationRotate"); primary: root.active-animation == "rotate-out"; clicked => { root.animation-set(1, "rotate-out", 0.5); } }
-                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationKenBurns"); primary: root.active-animation == "ken-burns"; clicked => { root.animation-set(2, "ken-burns", 2); } }
-                if root.animation-tab == 2 && root.selected.kind == ClipKind.text: Button { label: I18n.t("clipInspector.animationWaveLoop"); primary: root.active-animation == "wave-loop"; clicked => { root.animation-set(2, "wave-loop", 2); } }
-                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationPulse"); primary: root.active-animation == "pulse"; clicked => { root.animation-set(2, "pulse", 2); } }
-                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationOscillate"); primary: root.active-animation == "oscillate"; clicked => { root.animation-set(2, "oscillate", 2); } }
-                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationFloat"); primary: root.active-animation == "float"; clicked => { root.animation-set(2, "float", 2); } }
-                if root.animation-tab == 2: Button { label: I18n.t("clipInspector.animationShake"); primary: root.active-animation == "shake"; clicked => { root.animation-set(2, "shake", 2); } }
+                padding-top: 4px;
+                padding-bottom: 4px;
+
+                AnimationGrid {
+                    items: root.animation-tab == 0 ? (root.selected.kind == ClipKind.text ? root.anims-in-text : root.anims-in-video)
+                        : root.animation-tab == 1 ? (root.selected.kind == ClipKind.text ? root.anims-out-text : root.anims-out-video)
+                        : (root.selected.kind == ClipKind.text ? root.anims-combo-text : root.anims-combo-video);
+                    active-id: root.active-animation;
+                    is-text: root.selected.kind == ClipKind.text;
+                    selected(id) => {
+                        let dur = (root.animation-tab == 2) ? 2.0 : (id == "typewriter" || id == "typewriter-reverse" ? 0.8 : (id == "word-reveal" || id == "character-reveal" || id == "word-exit" || id == "character-exit" ? 0.6 : 0.5));
+                        root.animation-set(root.animation-tab, id, dur);
+                    }
+                }
             }
+
             if root.active-animation != "": Param {
                 label: I18n.t("clipInspector.animationDuration");
                 value: root.active-animation-duration;

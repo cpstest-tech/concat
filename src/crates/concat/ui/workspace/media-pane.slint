@@ -925,11 +925,31 @@ component CatalogueCard inherits Rectangle {
     /// and a name in a box says it in a third of the room.
     in property <bool> compact;
 
+    property <bool> is-transition: root.glyph == Glyph.transition || root.item.glyph == Glyph.transition;
+    property <bool> is-effect: root.glyph == Glyph.sparkle || root.item.glyph == Glyph.sparkle;
+
+    // Hover animation progress looping continuously on hover
+    property <float> hover-t: card.has-hover ? 1.0 : 0.0;
+    animate hover-t { duration: 1.4s; easing: ease-in-out; iteration-count: -1; }
+
     property <float> sweep: card.has-hover ? 1.0 : 0.0;
     animate sweep { duration: 1.2s; easing: ease-in-out; iteration-count: -1; }
 
     property <float> shimmer: card.has-hover ? 1.0 : 0.0;
     animate shimmer { duration: 1.5s; easing: ease-in-out; iteration-count: -1; }
+
+    // Transition category detection
+    property <bool> is-split-h: root.item.id == "concat.split-h" || root.item.id == "split-horizontal";
+    property <bool> is-split-v: root.item.id == "concat.split-v" || root.item.id == "split-vertical";
+    property <bool> is-zoom: root.item.id == "concat.zoom-echo" || root.item.id == "concat.delayed-zoom" || root.item.id == "concat.zoom-scroll" || root.item.id == "concat.zoom-transition" || root.item.id == "concat.zoom-blur-transition";
+    property <bool> is-spin: root.item.id == "concat.spin-ccw" || root.item.id == "concat.spin" || root.item.id == "concat.swirl";
+    property <bool> is-flash: root.item.id == "concat.fade-white" || root.item.id == "white-flash" || root.item.id == "concat.light-leak-flash";
+    property <bool> is-black: root.item.id == "concat.fade-black" || root.item.id == "black-fade";
+    property <bool> is-blur: root.item.id == "concat.blur-dissolve";
+    property <bool> is-glitch: root.item.id == "concat.snap-tear" || root.item.id == "concat.glitch-transition";
+    property <bool> is-slide: root.item.id == "concat.slide" || root.item.id == "concat.push" || root.item.id == "concat.whip-pan";
+    property <bool> is-flow: root.item.id == "concat.flowing-memories" || root.item.id == "concat.light-leak-transition";
+    property <bool> is-wipe: root.item.id == "concat.linear-wipe" || root.item.id == "concat.clock-wipe" || root.item.id == "concat.shape-wipe" || root.item.id == "concat.rgb-split-wipe";
 
     opacity: drag.dragging ? 0.45 : 1.0;
 
@@ -958,17 +978,21 @@ component CatalogueCard inherits Rectangle {
 
             tile := Rectangle {
                 y: 0;
-                height: root.compact ? root.height : root.width * 9 / 16;
+                height: root.compact ? root.height : (root.is-transition ? root.width * 0.85 : root.width * 9 / 16);
                 border-radius: Theme.r;
                 background: root.compact && card.has-hover && root.item.enabled
                     ? Theme.field : Theme.well;
                 border-width: root.auditioning ? 2px : 1px;
                 border-color: root.auditioning ? Theme.accent
                     : (card.has-hover && root.item.enabled)
-                    ? Theme.line-strong : Theme.line;
+                    ? (root.is-transition || root.is-effect ? #00c4cc : Theme.line-strong)
+                    : Theme.line;
                 clip: true;
 
-                if root.item.art.width > 0: Image {
+                animate border-color { duration: 120ms; easing: cubic-bezier(0.4, 0, 0.2, 1); }
+
+                // ── Non-transition, non-effect (e.g. filters with art) ──
+                if !root.is-transition && !root.is-effect && root.item.art.width > 0: Image {
                     x: 0;
                     y: 0;
                     width: parent.width;
@@ -991,7 +1015,7 @@ component CatalogueCard inherits Rectangle {
                     overflow: elide;
                 }
 
-                if !root.compact && root.item.art.width == 0: Icon {
+                if !root.compact && !root.is-transition && !root.is-effect && root.item.art.width == 0: Icon {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                     glyph: root.item.glyph;
@@ -999,35 +1023,361 @@ component CatalogueCard inherits Rectangle {
                     tint: Theme.fg-dim;
                 }
 
-                // Transitions: animated sweep line / wipe overlay across card image
-                if (root.glyph == Glyph.transition || root.item.glyph == Glyph.transition) && card.has-hover: Rectangle {
+                // ── CapCut Transition Preview (Animated on hover) ──
+                if root.is-transition: Rectangle {
                     x: 0;
-                    y: 0;
-                    width: parent.width * root.sweep;
-                    height: parent.height;
-                    background: Theme.accent-soft;
-
-                    Rectangle {
-                        x: parent.width - 2px;
-                        y: 0;
-                        width: 2px;
-                        height: parent.height;
-                        background: Theme.accent;
-                    }
-                }
-
-                // Effects: subtle live shimmer effect on hover across thumbnail
-                if (root.glyph == Glyph.sparkle || root.item.glyph == Glyph.sparkle) && card.has-hover: Rectangle {
-                    x: -parent.width + (2 * parent.width * root.shimmer);
                     y: 0;
                     width: parent.width;
                     height: parent.height;
-                    background: @linear-gradient(90deg,
-                        transparent 0%,
-                        transparent 25%,
-                        Theme.accent-soft 50%,
-                        transparent 75%,
-                        transparent 100%);
+                    clip: true;
+
+                    // Scene B (Incoming shot)
+                    scene-b := Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+                        clip: true;
+
+                        // Mountain landscape
+                        Rectangle {
+                            x: parent.width * 0.15;
+                            y: parent.height * 0.5;
+                            width: parent.width * 0.7;
+                            height: parent.height * 0.6;
+                            border-radius: 4px;
+                            background: #00d2fc44;
+                        }
+                        // Orb
+                        Rectangle {
+                            x: parent.width * 0.68;
+                            y: parent.height * 0.18;
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: #00f2fe;
+                        }
+                    }
+
+                    // Scene A (Outgoing shot)
+                    if !root.is-split-h && !root.is-split-v: scene-a := Rectangle {
+                        x: root.is-slide && card.has-hover ? (-parent.width * root.hover-t) : 0px;
+                        y: 0;
+                        width: parent.width * (root.is-zoom && card.has-hover ? (1.0 + root.hover-t * 0.6) : (root.is-spin && card.has-hover ? (1.0 - root.hover-t * 0.7) : 1.0));
+                        height: parent.height * (root.is-zoom && card.has-hover ? (1.0 + root.hover-t * 0.6) : (root.is-spin && card.has-hover ? (1.0 - root.hover-t * 0.7) : 1.0));
+                        opacity: card.has-hover ? (
+                            root.is-slide ? 1.0
+                            : (1.0 - root.hover-t)
+                        ) : 1.0;
+                        background: @linear-gradient(135deg, #ff6b6b 0%, #ee5253 45%, #ff9f43 100%);
+                        clip: true;
+
+                        // Silhouette element
+                        Rectangle {
+                            x: parent.width * 0.2;
+                            y: parent.height * 0.45;
+                            width: parent.width * 0.6;
+                            height: parent.height * 0.6;
+                            border-radius: 4px;
+                            background: #2c2c54cc;
+                        }
+                        // Warm sun orb
+                        Rectangle {
+                            x: parent.width * 0.22;
+                            y: parent.height * 0.2;
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: #feca57;
+                        }
+                    }
+
+                    // Split Horizontal: Two halves parting
+                    if root.is-split-h: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+
+                        // Left half
+                        Rectangle {
+                            x: card.has-hover ? (-parent.width * 0.5 * root.hover-t) : 0px;
+                            y: 0;
+                            width: parent.width * 0.5;
+                            height: parent.height;
+                            clip: true;
+                            background: @linear-gradient(135deg, #ff6b6b 0%, #ee5253 100%);
+                            Rectangle {
+                                x: parent.width * 0.4;
+                                y: parent.height * 0.45;
+                                width: parent.width * 1.2;
+                                height: parent.height * 0.6;
+                                border-radius: 4px;
+                                background: #2c2c54cc;
+                            }
+                        }
+                        // Right half
+                        Rectangle {
+                            x: parent.width * 0.5 + (card.has-hover ? (parent.width * 0.5 * root.hover-t) : 0px);
+                            y: 0;
+                            width: parent.width * 0.5;
+                            height: parent.height;
+                            clip: true;
+                            background: @linear-gradient(135deg, #ee5253 0%, #ff9f43 100%);
+                            Rectangle {
+                                x: -parent.width * 0.6;
+                                y: parent.height * 0.45;
+                                width: parent.width * 1.2;
+                                height: parent.height * 0.6;
+                                border-radius: 4px;
+                                background: #2c2c54cc;
+                            }
+                        }
+                        // Center split indicator line
+                        if !card.has-hover: Rectangle {
+                            x: parent.width * 0.5 - 1px;
+                            y: 0;
+                            width: 2px;
+                            height: parent.height;
+                            background: #ffffffaa;
+                        }
+                    }
+
+                    // Split Vertical: Top and bottom halves parting
+                    if root.is-split-v: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+
+                        // Top half
+                        Rectangle {
+                            x: 0;
+                            y: card.has-hover ? (-parent.height * 0.5 * root.hover-t) : 0px;
+                            width: parent.width;
+                            height: parent.height * 0.5;
+                            clip: true;
+                            background: @linear-gradient(180deg, #ff6b6b 0%, #ee5253 100%);
+                        }
+                        // Bottom half
+                        Rectangle {
+                            x: 0;
+                            y: parent.height * 0.5 + (card.has-hover ? (parent.height * 0.5 * root.hover-t) : 0px);
+                            width: parent.width;
+                            height: parent.height * 0.5;
+                            clip: true;
+                            background: @linear-gradient(180deg, #ee5253 0%, #ff9f43 100%);
+                        }
+                        // Center horizontal indicator line
+                        if !card.has-hover: Rectangle {
+                            x: 0;
+                            y: parent.height * 0.5 - 1px;
+                            width: parent.width;
+                            height: 2px;
+                            background: #ffffffaa;
+                        }
+                    }
+
+                    // Slide: Incoming scene slides over from right
+                    if root.is-slide && card.has-hover: Rectangle {
+                        x: parent.width * (1.0 - root.hover-t);
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(135deg, #10ac84 0%, #2e86de 100%);
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            y: 0;
+                            width: 2px;
+                            height: parent.height;
+                            background: #00c4cc;
+                        }
+                    }
+
+                    // Wipe: Edge wipes horizontally across
+                    if root.is-wipe && card.has-hover: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width * root.hover-t;
+                        height: parent.height;
+                        background: @linear-gradient(135deg, #10ac84 0%, #2e86de 100%);
+                        clip: true;
+                        Rectangle {
+                            x: parent.width - 2px;
+                            y: 0;
+                            width: 2px;
+                            height: parent.height;
+                            background: #00c4cc;
+                        }
+                    }
+
+                    // Zoom Echo shockwave ring
+                    if root.is-zoom && card.has-hover: Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: parent.width * (0.4 + root.hover-t * 0.75);
+                        height: parent.height * (0.4 + root.hover-t * 0.75);
+                        border-radius: self.width / 2;
+                        border-width: 2px;
+                        border-color: #00c4cc;
+                        opacity: Math.max(0.0, (1.0 - root.hover-t) * 0.9);
+                    }
+
+                    // White Flash overlay
+                    if root.is-flash && card.has-hover: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: #ffffff;
+                        opacity: Math.max(0.0, 1.0 - Math.abs(root.hover-t - 0.5) * 3.6);
+                    }
+
+                    // Black Fade overlay
+                    if root.is-black && card.has-hover: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: #000000;
+                        opacity: Math.max(0.0, 1.0 - Math.abs(root.hover-t - 0.5) * 2.8);
+                    }
+
+                    // Blur Dissolve bloom overlay
+                    if root.is-blur && card.has-hover: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        background: @radial-gradient(circle, #ffffff99 0%, #00c4cc44 60%, transparent 90%);
+                        opacity: Math.max(0.0, 1.0 - Math.abs(root.hover-t - 0.5) * 2.4);
+                    }
+
+                    // Flowing memories / light leak sweep
+                    if root.is-flow && card.has-hover: Rectangle {
+                        x: -parent.width + root.hover-t * parent.width * 2.2;
+                        y: 0;
+                        width: parent.width * 0.8;
+                        height: parent.height;
+                        background: @linear-gradient(90deg, transparent 0%, #feca5788 40%, #ffffffcc 60%, transparent 100%);
+                    }
+
+                    // Glitch / Snap Tear horizontal slices
+                    if root.is-glitch && card.has-hover: Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width;
+                        height: parent.height;
+                        for strip-idx in 4: Rectangle {
+                            x: Math.sin(root.hover-t * 30.0 + strip-idx * 2.2) * 8px;
+                            y: strip-idx * (parent.height / 4);
+                            width: parent.width;
+                            height: parent.height / 4;
+                            background: (strip-idx == 1 || strip-idx == 3) ? #00f2fe33 : #ff383833;
+                        }
+                    }
+
+                    // Static badge when not hovering
+                    if !card.has-hover: Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 12px;
+                        background: Theme.scrim;
+
+                        Icon {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            glyph: Glyph.transition;
+                            size: 13px;
+                            tint: Theme.on-scrim;
+                        }
+                    }
+                }
+
+                // ── CapCut Effect Preview (Animated on hover) ──
+                if root.is-effect: Rectangle {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    clip: true;
+
+                    if root.item.art.width > 0: Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+
+                        Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: root.item.art;
+                            image-fit: cover;
+                        }
+
+                        // Live chromatic aberration shift on hover
+                        if card.has-hover: Rectangle {
+                            x: Math.sin(root.shimmer * 20.0) * 3px;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            opacity: 0.25;
+                            background: @linear-gradient(90deg, #ff005544 0%, transparent 50%, #00f2fe44 100%);
+                        }
+
+                        // Glowing shimmer beam
+                        if card.has-hover: Rectangle {
+                            x: -parent.width + (2 * parent.width * root.shimmer);
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            background: @linear-gradient(90deg,
+                                transparent 0%,
+                                transparent 30%,
+                                Theme.accent-soft 50%,
+                                transparent 70%,
+                                transparent 100%);
+                        }
+                    }
+
+                    if root.item.art.width == 0: Rectangle {
+                        width: parent.width;
+                        height: parent.height;
+                        background: @linear-gradient(135deg, #1f1c2c 0%, #928dab 100%);
+
+                        // Viewfinder framing marks in corners
+                        Rectangle { x: 4px; y: 4px; width: 6px; height: 1.5px; background: Theme.fg-dim; }
+                        Rectangle { x: 4px; y: 4px; width: 1.5px; height: 6px; background: Theme.fg-dim; }
+                        Rectangle { x: parent.width - 10px; y: 4px; width: 6px; height: 1.5px; background: Theme.fg-dim; }
+                        Rectangle { x: parent.width - 5.5px; y: 4px; width: 1.5px; height: 6px; background: Theme.fg-dim; }
+                        Rectangle { x: 4px; y: parent.height - 5.5px; width: 6px; height: 1.5px; background: Theme.fg-dim; }
+                        Rectangle { x: 4px; y: parent.height - 10px; width: 1.5px; height: 6px; background: Theme.fg-dim; }
+                        Rectangle { x: parent.width - 10px; y: parent.height - 5.5px; width: 6px; height: 1.5px; background: Theme.fg-dim; }
+                        Rectangle { x: parent.width - 5.5px; y: parent.height - 10px; width: 1.5px; height: 6px; background: Theme.fg-dim; }
+
+                        Icon {
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            glyph: Glyph.sparkle;
+                            size: card.has-hover ? 24px + Math.sin(root.shimmer * 6.283) * 4px : 22px;
+                            tint: card.has-hover ? #00c4cc : Theme.fg-dim;
+                        }
+
+                        if card.has-hover: Rectangle {
+                            x: -parent.width + (2 * parent.width * root.shimmer);
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            background: @linear-gradient(90deg,
+                                transparent 0%,
+                                transparent 25%,
+                                #00c4cc44 50%,
+                                transparent 75%,
+                                transparent 100%);
+                        }
+                    }
                 }
 
                 if !root.item.enabled: Rectangle {
@@ -1047,18 +1397,16 @@ component CatalogueCard inherits Rectangle {
                     }
                 }
 
-                // The plus is its own touch area, so that on a showing
-                // card it adds where the tile around it only shows. Always
-                // there and shown on hover, rather than made on hover: it
-                // has to keep itself on screen while the pointer is over
-                // it, whether or not the tile still counts that as hovered.
+                // CapCut-style Download / Plus Action Button
                 Rectangle {
                     x: parent.width - self.width - 4px;
                     y: parent.height - self.height - 4px;
                     width: 20px;
                     height: 20px;
-                    border-radius: Theme.r-xs;
-                    background: plus.has-hover ? Theme.accent : Theme.scrim;
+                    border-radius: 10px;
+                    background: plus.has-hover ? #00c4cc : Theme.scrim;
+                    border-width: 1px;
+                    border-color: plus.has-hover ? #00c4cc : Theme.line;
                     visible: root.item.enabled && (card.has-hover || plus.has-hover);
 
                     plus := TouchArea {
@@ -1071,13 +1419,23 @@ component CatalogueCard inherits Rectangle {
                         y: (parent.height - self.height) / 2;
                         glyph: Glyph.plus;
                         size: 11px;
-                        tint: plus.has-hover ? Theme.on-accent : Theme.on-scrim;
+                        tint: plus.has-hover ? #ffffff : Theme.on-scrim;
                     }
                 }
             }
 
             if !root.compact: Text {
-                x: 0;
+                x: 2px;
+                y: tile.height + 4px;
+                width: root.width - 4px;
+                height: 14px;
+                text: root.item.label;
+                color: (card.has-hover || root.auditioning) ? Theme.fg : Theme.fg-muted;
+                font-size: Theme.fs-sm;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                overflow: elide;
+            }
                 y: tile.height + 4px;
                 width: root.width;
                 height: 14px;
@@ -1293,7 +1651,9 @@ export component ShelfGrid inherits Rectangle {
     property <int> cols: Math.max(1,
         Math.floor((root.width + root.gap) / (root.min-card + root.gap)));
     property <length> card-w: (root.width - (root.cols - 1) * root.gap) / root.cols;
+    property <bool> is-transition: root.glyph == Glyph.transition;
     property <length> card-h: root.compact ? root.card-w / 2
+        : root.is-transition ? root.card-w * 0.85 + 4px + 14px
         : root.card-w * 9 / 16 + 4px + 14px;
     property <int> rows: Math.ceil(root.entries.length / root.cols);
 
@@ -2348,6 +2708,12 @@ export component MediaPane inherits Rectangle {
                         }
                         if root.transitions-open: VerticalLayout {
                             spacing: 1px;
+                            CategoryRow {
+                                height: 24px;
+                                label: I18n.t("common.all");
+                                current: Library.view(3).group < 0;
+                                clicked => { Library.group-changed(3, -1); }
+                            }
                             for label[index] in root.transition-groups: CategoryRow {
                                 height: 24px;
                                 label: label;
@@ -2369,6 +2735,15 @@ export component MediaPane inherits Rectangle {
                         }
                         if root.effects-open: VerticalLayout {
                             spacing: 1px;
+                            CategoryRow {
+                                height: 24px;
+                                label: I18n.t("common.all");
+                                current: !root.audio-shelf && Library.view(1).group < 0;
+                                clicked => {
+                                    root.audio-shelf = false;
+                                    Library.group-changed(1, -1);
+                                }
+                            }
                             for label[index] in root.effect-groups: CategoryRow {
                                 height: 24px;
                                 label: label;
