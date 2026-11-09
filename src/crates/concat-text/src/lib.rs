@@ -1471,50 +1471,86 @@ fn words(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
 /// A separable box blur over premultiplied RGBA, run twice for a soft
 /// falloff. Radius in pixels; zero leaves the picture alone.
 fn blur(pixmap: &mut Pixmap, radius: usize) {
-    if radius == 0 {
+    let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
+    blur_rect(pixmap, radius, 0, 0, width, height);
+}
+
+/// A separable box blur restricted to a bounding box `[x0..x1, y0..y1]`.
+/// Uses cache-friendly streaming row-major passes for both horizontal and vertical steps.
+fn blur_rect(pixmap: &mut Pixmap, radius: usize, x0: usize, y0: usize, x1: usize, y1: usize) {
+    if radius == 0 || x0 >= x1 || y0 >= y1 {
         return;
     }
     let (width, height) = (pixmap.width() as usize, pixmap.height() as usize);
+    let x0 = x0.min(width);
+    let x1 = x1.min(width);
+    let y0 = y0.min(height);
+    let y1 = y1.min(height);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
     let data = pixmap.data_mut();
     let mut scratch = vec![0u8; data.len()];
+    let window = (2 * radius + 1) as u32;
+
     for _ in 0..2 {
-        // Horizontal, into scratch.
-        for y in 0..height {
+        // Horizontal pass: row by row into scratch.
+        for y in y0..y1 {
             let row = y * width * 4;
             for channel in 0..4 {
                 let mut sum: u32 = 0;
-                let window = (2 * radius + 1) as u32;
                 let at = |x: isize| -> u32 {
                     let x = x.clamp(0, width as isize - 1) as usize;
                     u32::from(data[row + x * 4 + channel])
                 };
                 for x in -(radius as isize)..=(radius as isize) {
-                    sum += at(x);
+                    sum += at(x0 as isize + x);
                 }
-                for x in 0..width {
+                for x in x0..x1 {
                     scratch[row + x * 4 + channel] = (sum / window) as u8;
                     sum += at(x as isize + radius as isize + 1);
                     sum -= at(x as isize - radius as isize);
                 }
             }
         }
-        // Vertical, back into data.
-        for x in 0..width {
-            for channel in 0..4 {
-                let mut sum: u32 = 0;
-                let window = (2 * radius + 1) as u32;
-                let at = |y: isize| -> u32 {
-                    let y = y.clamp(0, height as isize - 1) as usize;
-                    u32::from(scratch[(y * width + x) * 4 + channel])
-                };
-                for y in -(radius as isize)..=(radius as isize) {
-                    sum += at(y);
-                }
-                for y in 0..height {
-                    data[(y * width + x) * 4 + channel] = (sum / window) as u8;
-                    sum += at(y as isize + radius as isize + 1);
-                    sum -= at(y as isize - radius as isize);
-                }
+
+        // Vertical pass: cache-friendly row-major streaming with rolling column sums.
+        let mut col_sums = vec![0u32; (x1 - x0) * 4];
+        for dy in -(radius as isize)..=(radius as isize) {
+            let py = (y0 as isize + dy).clamp(0, height as isize - 1) as usize;
+            let prow = py * width * 4;
+            for x in x0..x1 {
+                let col = (x - x0) * 4;
+                let sidx = prow + x * 4;
+                col_sums[col] += u32::from(scratch[sidx]);
+                col_sums[col + 1] += u32::from(scratch[sidx + 1]);
+                col_sums[col + 2] += u32::from(scratch[sidx + 2]);
+                col_sums[col + 3] += u32::from(scratch[sidx + 3]);
+            }
+        }
+
+        for y in y0..y1 {
+            let drow = y * width * 4;
+            let add_y = (y as isize + radius as isize + 1).clamp(0, height as isize - 1) as usize;
+            let sub_y = (y as isize - radius as isize).clamp(0, height as isize - 1) as usize;
+            let add_row = add_y * width * 4;
+            let sub_row = sub_y * width * 4;
+
+            for x in x0..x1 {
+                let col = (x - x0) * 4;
+                let didx = drow + x * 4;
+                data[didx] = (col_sums[col] / window) as u8;
+                data[didx + 1] = (col_sums[col + 1] / window) as u8;
+                data[didx + 2] = (col_sums[col + 2] / window) as u8;
+                data[didx + 3] = (col_sums[col + 3] / window) as u8;
+
+                let add_idx = add_row + x * 4;
+                let sub_idx = sub_row + x * 4;
+                col_sums[col] = col_sums[col] + u32::from(scratch[add_idx]) - u32::from(scratch[sub_idx]);
+                col_sums[col + 1] = col_sums[col + 1] + u32::from(scratch[add_idx + 1]) - u32::from(scratch[sub_idx + 1]);
+                col_sums[col + 2] = col_sums[col + 2] + u32::from(scratch[add_idx + 2]) - u32::from(scratch[sub_idx + 2]);
+                col_sums[col + 3] = col_sums[col + 3] + u32::from(scratch[add_idx + 3]) - u32::from(scratch[sub_idx + 3]);
             }
         }
     }
@@ -1962,31 +1998,53 @@ fn paint(
     }
 
     // The shadow: the words again, offset down and right, black, blurred on
-    // a layer of their own and laid under the real words - every look's
-    // under all of them, one shadow for the title.
-    if style.shadow
-        && !words.is_empty()
-        && let Some(mut layer) = Pixmap::new(canvas.width(), canvas.height())
-    {
+    // a local layer covering only the shadow bounding box and laid under
+    // the real words.
+    if style.shadow && !words.is_empty() {
         let mut shade = Paint {
             anti_alias: true,
             ..Paint::default()
         };
         shade.set_color(Color::from_rgba8(0, 0, 0, 150));
-        let offset =
-            Transform::from_translate(shadow_offset.0 + shift_x, shadow_offset.1 + shift_y);
+        let mut min_x = f32::MAX;
+        let mut min_y = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut max_y = f32::MIN;
         for (_, path) in &words {
-            layer.fill_path(path, &shade, FillRule::Winding, offset, None);
+            let b = path.bounds();
+            min_x = min_x.min(b.left());
+            min_y = min_y.min(b.top());
+            max_x = max_x.max(b.right());
+            max_y = max_y.max(b.bottom());
         }
-        blur(&mut layer, shadow_blur);
-        canvas.draw_pixmap(
-            0,
-            0,
-            layer.as_ref(),
-            &PixmapPaint::default(),
-            Transform::identity(),
-            None,
-        );
+        let off_x = shadow_offset.0 + shift_x;
+        let off_y = shadow_offset.1 + shift_y;
+        let pad = (4 * shadow_blur + 4) as f32;
+        let x0 = ((min_x + off_x - pad).floor() as isize).max(0) as usize;
+        let y0 = ((min_y + off_y - pad).floor() as isize).max(0) as usize;
+        let x1 = ((max_x + off_x + pad).ceil() as isize).min(canvas.width() as isize).max(0) as usize;
+        let y1 = ((max_y + off_y + pad).ceil() as isize).min(canvas.height() as isize).max(0) as usize;
+
+        let layer_w = (x1.saturating_sub(x0)) as u32;
+        let layer_h = (y1.saturating_sub(y0)) as u32;
+        if layer_w > 0 && layer_h > 0 && let Some(mut layer) = Pixmap::new(layer_w, layer_h) {
+            let local_offset = Transform::from_translate(
+                shadow_offset.0 + shift_x - x0 as f32,
+                shadow_offset.1 + shift_y - y0 as f32,
+            );
+            for (_, path) in &words {
+                layer.fill_path(path, &shade, FillRule::Winding, local_offset, None);
+            }
+            blur(&mut layer, shadow_blur);
+            canvas.draw_pixmap(
+                x0 as i32,
+                y0 as i32,
+                layer.as_ref(),
+                &PixmapPaint::default(),
+                Transform::identity(),
+                None,
+            );
+        }
     }
 
     // The outline, under the fill so only its outer half shows - which is
@@ -2198,15 +2256,26 @@ pub fn render_shape_frame(
 
 /// tiny-skia keeps premultiplied pixels; a frame carries straight alpha.
 fn straight_rgba(canvas: &Pixmap) -> Vec<u8> {
-    let mut rgba = Vec::with_capacity(canvas.pixels().len() * 4);
-    for pixel in canvas.pixels() {
-        let straight = pixel.demultiply();
-        rgba.extend_from_slice(&[
-            straight.red(),
-            straight.green(),
-            straight.blue(),
-            straight.alpha(),
-        ]);
+    let pixels = canvas.pixels();
+    let mut rgba = vec![0u8; pixels.len() * 4];
+    for (i, pixel) in pixels.iter().enumerate() {
+        let a = pixel.alpha();
+        if a == 0 {
+            continue;
+        }
+        let offset = i * 4;
+        if a == 255 {
+            rgba[offset] = pixel.red();
+            rgba[offset + 1] = pixel.green();
+            rgba[offset + 2] = pixel.blue();
+            rgba[offset + 3] = 255;
+        } else {
+            let straight = pixel.demultiply();
+            rgba[offset] = straight.red();
+            rgba[offset + 1] = straight.green();
+            rgba[offset + 2] = straight.blue();
+            rgba[offset + 3] = a;
+        }
     }
     rgba
 }

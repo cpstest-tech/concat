@@ -3048,6 +3048,10 @@ impl Studio {
         // without it the monitor would show every cutout as shot.
         let project_dir = std::path::PathBuf::from(session.path());
         let (width, height) = self.output_size();
+        let (shown_w, shown_h) = crate::panes::monitor::MonitorPane::frame_size(
+            self.quality_of(),
+            (width, height),
+        );
         // The flattening is the document's, not the frame's: kept between
         // frames of an unchanged document and handed over by pointer, so
         // playback and scrubbing neither flatten nor plan again. A gesture
@@ -3056,7 +3060,7 @@ impl Studio {
             && self
                 .flat
                 .as_ref()
-                .is_some_and(|(at, w, h, _)| *at == self.revision && *w == width && *h == height);
+                .is_some_and(|(at, w, h, _)| *at == self.revision && *w == shown_w && *h == shown_h);
         let clips = if cached {
             std::sync::Arc::clone(&self.flat.as_ref().expect("checked").3)
         } else {
@@ -3065,49 +3069,33 @@ impl Studio {
                 None,
                 Some(&project_dir),
             );
-            // Titles, painted to pictures and rejoined; see concat-host's titles.
-            if self.echo.is_some() {
-                // A change in flight: the titles are painted in memory at
-                // the monitor's size and handed to it as pixels - no file
-                // per pointer step - and the blocks they report are scaled
-                // back up to the output's terms, which the stage measures
-                // in. Nothing is written until the change is committed.
-                let (shown_w, shown_h) = crate::panes::monitor::MonitorPane::frame_size(
-                    self.quality_of(),
-                    (width, height),
+            // Titles, painted to pictures at preview resolution (shown_w, shown_h) and rejoined.
+            // Never rasterize titles at 4K for preview, only at the active preview monitor resolution!
+            let scale = f64::from(shown_w) / f64::from(width);
+            let up = |px: u32| (f64::from(px) / scale).round() as u32;
+            let up_off = |px: i32| (f64::from(px) / scale).round() as i32;
+            for title in self
+                .host
+                .titles
+                .clips_live(self.project(), shown_w, shown_h)
+            {
+                self.title_blocks.insert(
+                    title.clip_id,
+                    (
+                        (up(title.block.0), up(title.block.1)),
+                        (up_off(title.offset.0), up_off(title.offset.1)),
+                    ),
                 );
-                let scale = f64::from(shown_w) / f64::from(width);
-                let up = |px: u32| (f64::from(px) / scale).round() as u32;
-                let up_off = |px: i32| (f64::from(px) / scale).round() as i32;
-                for title in self
-                    .host
-                    .titles
-                    .clips_live(self.project(), shown_w, shown_h)
-                {
-                    self.title_blocks.insert(
-                        title.clip_id,
-                        (
-                            (up(title.block.0), up(title.block.1)),
-                            (up_off(title.offset.0), up_off(title.offset.1)),
-                        ),
-                    );
-                    if let Some(frame) = title.frame {
-                        self.host
-                            .monitor
-                            .hold_still(std::path::Path::new(&title.clip.path), frame);
-                    }
-                    clips.push(title.clip);
+                if let Some(frame) = title.frame {
+                    self.host
+                        .monitor
+                        .hold_still(std::path::Path::new(&title.clip.path), frame);
                 }
-            } else {
-                for title in self.host.titles.clips(self.project(), width, height) {
-                    self.title_blocks
-                        .insert(title.clip_id, (title.block, title.offset));
-                    clips.push(title.clip);
-                }
+                clips.push(title.clip);
             }
             let clips = std::sync::Arc::new(clips);
             if self.echo.is_none() {
-                self.flat = Some((self.revision, width, height, std::sync::Arc::clone(&clips)));
+                self.flat = Some((self.revision, shown_w, shown_h, std::sync::Arc::clone(&clips)));
             }
             clips
         };
@@ -3201,21 +3189,23 @@ impl Studio {
         // which at 24, 25 or 60 fps is unevenly late, and reads as judder.
         let fps = self.project().active().video.rate();
         let mut shown: Option<i64> = Some((f64::from(self.playhead) * fps + 1e-6).floor() as i64);
+        let playback = Arc::clone(&self.host.playback);
+        let end = self.duration();
         self.transport.start(
             slint::TimerMode::Repeated,
-            std::time::Duration::from_millis(16),
+            std::time::Duration::from_millis(4),
             move || {
+                let time = playback.position_now();
+                let current_frame = (time * fps).floor() as i64;
+                if time < f64::from(end) && shown == Some(current_frame) {
+                    return;
+                }
+                shown = Some(current_frame);
                 crate::host::Shell::with(|shell, app| {
                     let paged = {
                         let mut studio = shell.studio.borrow_mut();
                         let end = studio.duration();
-                        let position = studio.host.playback.position_now() as f32;
-                        let fps = studio.project().active().video.rate();
-                        let frame = (f64::from(position) * fps + 1e-6).floor() as i64;
-                        if position < end && shown == Some(frame) {
-                            return;
-                        }
-                        shown = Some(frame);
+                        let position = time as f32;
                         let prev_scroll = studio.lanes.scroll_left;
                         studio.playhead = position.min(end);
                         // The view follows: a playhead that runs off the
@@ -9934,12 +9924,14 @@ impl Studio {
             if editor.get_has_picture() != has_picture {
                 editor.set_has_picture(has_picture);
             }
-            let name: slint::SharedString = showing
-                .map(|clip| clip.name.as_str())
-                .unwrap_or_default()
-                .into();
-            if editor.get_preview_clip_name() != name {
-                editor.set_preview_clip_name(name);
+            if !self.playing {
+                let name: slint::SharedString = showing
+                    .map(|clip| clip.name.as_str())
+                    .unwrap_or_default()
+                    .into();
+                if editor.get_preview_clip_name() != name {
+                    editor.set_preview_clip_name(name);
+                }
             }
             let dur = self.duration();
             if (editor.get_preview_duration() - dur).abs() > 1e-4 {

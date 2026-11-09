@@ -174,13 +174,13 @@ mod tests {
     fn video_requires_an_audio_stream_and_can_mix_with_audio_clips() {
         let (mut project, ids) = project(&[ClipKind::Audio, ClipKind::Video]);
         std::sync::Arc::make_mut(&mut project.active_mut().clips[1]).media_id = "m1".into();
-        project.media.push(concat_project::model::MediaItem {
+        std::sync::Arc::make_mut(&mut project.media).push(concat_project::model::MediaItem {
             id: "m1".into(),
             has_audio: true,
             ..Default::default()
         });
         assert_eq!(targets(&project, &ids, |_| false), ids);
-        project.media[0].has_audio = false;
+        std::sync::Arc::make_mut(&mut project.media)[0].has_audio = false;
         assert!(targets(&project, &ids, |_| false).is_empty());
     }
 

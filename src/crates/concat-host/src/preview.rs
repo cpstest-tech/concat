@@ -17,7 +17,7 @@
 //! thread that owns the device - because the drawing is not a thing a
 //! worker may do; see `texture_of`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use concat_export::ExportClip;
@@ -69,6 +69,7 @@ pub struct Monitor {
     early: Arc<Mutex<Vec<PathBuf>>>,
     #[cfg(feature = "gpu")]
     gpu: Option<Arc<Mutex<concat_render::WgpuCompositor>>>,
+    titles: Option<Arc<crate::titles::Titles>>,
 }
 
 /// One kept plan and what it was built for.
@@ -100,7 +101,19 @@ impl Monitor {
             early: Arc::new(Mutex::new(Vec::new())),
             #[cfg(feature = "gpu")]
             gpu: None,
+            titles: None,
         }
+    }
+
+    /// Attaches the titles painter for pre-rasterization during prefetch.
+    pub fn with_titles(mut self, titles: Arc<crate::titles::Titles>) -> Self {
+        self.titles = Some(titles);
+        self
+    }
+
+    /// Attaches the titles painter for pre-rasterization during prefetch.
+    pub fn attach_titles(&mut self, titles: Arc<crate::titles::Titles>) {
+        self.titles = Some(titles);
     }
 
     /// A monitor that composites on `device` - the window's - so
@@ -115,6 +128,7 @@ impl Monitor {
             gpu: Some(Arc::new(Mutex::new(
                 concat_render::WgpuCompositor::with_device(device, queue),
             ))),
+            titles: None,
         }
     }
 
@@ -188,7 +202,25 @@ impl Monitor {
         settings: &DocumentSettings,
         spec: FrameSpec,
     ) -> Result<concat_export::PreviewSources, String> {
-        let plan = self.plan_for(clips, settings, spec);
+        let plan = self.plan_for(Arc::clone(&clips), settings, spec);
+        let playhead_frame = (spec.time * (settings.rate_num as f64) / (settings.rate_den.max(1) as f64)).round() as i64;
+        self.pool.update_playhead_index(playhead_frame);
+        if let Some(ref titles) = self.titles {
+            for clip in clips.iter() {
+                if clip.kind == concat_export::ClipKind::Image
+                    && clip.path.starts_with("memory://titles/")
+                    && clip.start <= spec.time
+                    && spec.time < clip.start + clip.duration
+                {
+                    let name = clip.path.trim_start_matches("memory://titles/");
+                    if let Ok(key) = u64::from_str_radix(name, 16) {
+                        if let Some(frame) = titles.ensure_rasterized(key) {
+                            self.pool.hold_still(Path::new(&clip.path), frame);
+                        }
+                    }
+                }
+            }
+        }
         concat_export::preview_sources_of(&self.pool, &plan, spec.time, spec.proxy, spec.nearest)
     }
 
@@ -316,7 +348,25 @@ impl Monitor {
         settings: &DocumentSettings,
         spec: FrameSpec,
     ) -> Result<(Vec<u8>, bool), String> {
-        let plan = self.plan_for(clips, settings, spec);
+        let plan = self.plan_for(Arc::clone(&clips), settings, spec);
+        let playhead_frame = (spec.time * (settings.rate_num as f64) / (settings.rate_den.max(1) as f64)).round() as i64;
+        self.pool.update_playhead_index(playhead_frame);
+        if let Some(ref titles) = self.titles {
+            for clip in clips.iter() {
+                if clip.kind == concat_export::ClipKind::Image
+                    && clip.path.starts_with("memory://titles/")
+                    && clip.start <= spec.time
+                    && spec.time < clip.start + clip.duration
+                {
+                    let name = clip.path.trim_start_matches("memory://titles/");
+                    if let Ok(key) = u64::from_str_radix(name, 16) {
+                        if let Some(frame) = titles.ensure_rasterized(key) {
+                            self.pool.hold_still(Path::new(&clip.path), frame);
+                        }
+                    }
+                }
+            }
+        }
         let sources = concat_export::preview_sources_of(
             &self.pool,
             &plan,
@@ -349,6 +399,27 @@ impl Monitor {
             }
             _ => Vec::new(),
         };
+
+        // Pre-rasterize and hold any titles in lookahead frames so monitor gets 100% cache hits
+        for moment in &moments {
+            for request in &moment.frames {
+                if let Some(key) = parse_title_key(&request.path) {
+                    if self.pool.held_still(&request.path).is_none() {
+                        if let Some(titles) = &self.titles {
+                            let titles = Arc::clone(titles);
+                            let pool = Arc::clone(&self.pool);
+                            let path = request.path.clone();
+                            crate::scheduler().submit(concat_media::Priority::Playback, move || {
+                                if let Some(frame) = titles.ensure_rasterized(key) {
+                                    pool.hold_still(&path, frame);
+                                }
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         let fps = (settings.rate_num as f64 / settings.rate_den.max(1) as f64).max(1.0);
         // The file a cut leads into, read a second early: opening a reader
         // and seeking it costs more than the quarter second the frames
@@ -429,4 +500,12 @@ impl Monitor {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
     }
+}
+
+/// Extracts the title key from a memory title URI if matching.
+pub fn parse_title_key(path: &std::path::Path) -> Option<u64> {
+    let s = path.to_str()?;
+    let key_str = s.strip_prefix("memory://titles/")
+        .or_else(|| s.strip_prefix("memory:/titles/"))?;
+    u64::from_str_radix(key_str, 16).ok()
 }

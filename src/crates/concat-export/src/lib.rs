@@ -2872,7 +2872,15 @@ pub fn preview_sources_of(
     let mut layers: Vec<PlannedLayer> = Vec::with_capacity(plan_at.layers.len());
     let mut failures: Vec<String> = Vec::new();
     let mut exact = true;
-    if plan_at.layers.len() <= 1 {
+    let moving_layers = plan_at
+        .layers
+        .iter()
+        .filter(|layer| !stills.contains(&layer.clip))
+        .count();
+    if moving_layers <= 1 {
+        // Sequential decode: when at most one moving video layer is on screen
+        // and other layers are stills (titles, subtitles, images), decoding on the
+        // current thread avoids spawning/joining OS threads and eliminates lock contention.
         for layer in &plan_at.layers {
             match decode_layer(layer) {
                 Ok((filled, layer_exact)) => {
@@ -2910,13 +2918,14 @@ pub fn preview_sources_of(
         }
     }
 
-    // Planned layers with nothing decoded is a failed preview, not a black
-    // frame: compositing zero sources yields opaque black, and the caller
-    // would draw that "truth" over its own perfectly good approximation. An
-    // *empty plan* still composites - a gap in the timeline really is black.
-    if layers.is_empty() && !plan_at.layers.is_empty() {
+    // Never composite a partial frame over black if any planned layer failed
+    // (such as drawing a subtitle over empty black when the video layer dropped).
+    // Returning an Err causes the monitor to preserve the previous full frame.
+    if !failures.is_empty() {
         return Err(format!(
-            "no layer decoded for the paused preview: {}",
+            "not all layers decoded for preview ({}/{}): {}",
+            layers.len(),
+            plan_at.layers.len(),
             failures.join(" / ")
         ));
     }

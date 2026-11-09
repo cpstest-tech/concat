@@ -318,7 +318,17 @@ impl<K: CacheKey> FrameCache<K> {
                 let doomed = self
                     .frames
                     .iter()
-                    .filter(|(_, (_, tick))| self.tick.saturating_sub(*tick) > 16)
+                    .filter(|(k, (_, tick))| {
+                        if self.tick.saturating_sub(*tick) <= 48 {
+                            return false;
+                        }
+                        if let Some(idx) = k.frame_index() {
+                            if idx >= playhead && idx <= playhead + 64 {
+                                return false;
+                            }
+                        }
+                        true
+                    })
                     .max_by_key(|(k, (_, tick))| {
                         let dist = k.frame_index().map_or(0, |idx| (idx - playhead).abs());
                         (dist, u64::MAX - *tick)
@@ -336,6 +346,18 @@ impl<K: CacheKey> FrameCache<K> {
             }
         }
         while self.held > keep {
+            if let Some(playhead) = self.playhead_index {
+                if let Some((&tick, oldest_key)) = self.order.first_key_value() {
+                    if self.tick.saturating_sub(tick) <= 48 {
+                        break;
+                    }
+                    if let Some(idx) = oldest_key.frame_index() {
+                        if idx >= playhead && idx <= playhead + 64 {
+                            break;
+                        }
+                    }
+                }
+            }
             let Some((_, oldest)) = self.order.pop_first() else {
                 break;
             };
@@ -543,6 +565,11 @@ impl Reader {
     fn skip_before(&mut self, rate: FrameRate, index: i64) {
         let boundary = rate.time_of_frame(index) - rate.frame_duration() / Rational::from_int(2);
         self.decoder.discard_through(boundary);
+    }
+
+    fn discard_before(&mut self, rate: FrameRate, index: i64) {
+        let boundary = rate.time_of_frame(index) - rate.frame_duration() / Rational::from_int(2);
+        self.decoder.discard_before(boundary);
     }
 
     /// The frame on screen at `target` when no frame has that index: the
@@ -770,7 +797,7 @@ type HeldStills = (
 /// How many in-memory stills the pool keeps. Each is a frame, mostly
 /// transparent, at the monitor's size; a drag makes a few dozen a second
 /// and shows one.
-const STILLS_HELD: usize = 24;
+const STILLS_HELD: usize = 512;
 
 impl ReaderPool {
     /// A pool with `cache_bytes` of frame cache and up to `max_readers` warm
@@ -863,6 +890,19 @@ impl ReaderPool {
     /// earlier still of that name are let go, so the name never shows
     /// stale pixels.
     pub fn hold_still(&self, path: &Path, frame: Arc<Frame>) {
+        let same = if let Ok(held) = self.memory.lock() {
+            held.0.get(path).is_some_and(|existing| {
+                Arc::ptr_eq(existing, &frame)
+                    || (existing.id() == frame.id()
+                        && existing.width() == frame.width()
+                        && existing.height() == frame.height())
+            })
+        } else {
+            false
+        };
+        if same {
+            return;
+        }
         if let Ok(mut held) = self.memory.lock() {
             let (stills, order) = &mut *held;
             if stills.insert(path.to_path_buf(), frame).is_none() {
@@ -890,7 +930,7 @@ impl ReaderPool {
     }
 
     /// The still held under `path`, if one is.
-    fn held_still(&self, path: &Path) -> Option<Arc<Frame>> {
+    pub fn held_still(&self, path: &Path) -> Option<Arc<Frame>> {
         self.memory.lock().ok()?.0.get(path).cloned()
     }
 
@@ -945,28 +985,79 @@ impl ReaderPool {
 
     fn cached_source(&self, key: &SourceKey) -> Option<Arc<Frame>> {
         let mut cache = self.sources.lock().ok()?;
-        cache.set_playhead_index(Some(key.index));
+        if !crate::is_playback_active() {
+            cache.set_playhead_index(Some(key.index));
+        }
         cache.get(key)
     }
 
     fn remember_source(&self, key: SourceKey, frame: Arc<Frame>) {
         if let Ok(mut cache) = self.sources.lock() {
-            cache.set_playhead_index(Some(key.index));
+            if !crate::is_playback_active() {
+                cache.set_playhead_index(Some(key.index));
+            }
             cache.insert(key, frame);
         }
     }
 
     fn cached_treated(&self, key: &TreatedKey) -> Option<Arc<Frame>> {
         let mut cache = self.treated.lock().ok()?;
-        cache.set_playhead_index(Some(key.source.index));
+        if !crate::is_playback_active() {
+            cache.set_playhead_index(Some(key.source.index));
+        }
         cache.get(key)
     }
 
     fn remember_treated(&self, key: TreatedKey, frame: Arc<Frame>) {
         if let Ok(mut cache) = self.treated.lock() {
-            cache.set_playhead_index(Some(key.source.index));
+            if !crate::is_playback_active() {
+                cache.set_playhead_index(Some(key.source.index));
+            }
             cache.insert(key, frame);
         }
+    }
+
+    /// Explicitly updates the playhead frame index tracked by the caches.
+    pub fn update_playhead_index(&self, index: i64) {
+        if let Ok(mut cache) = self.sources.lock() {
+            cache.set_playhead_index(Some(index));
+        }
+        if let Ok(mut cache) = self.treated.lock() {
+            cache.set_playhead_index(Some(index));
+        }
+    }
+
+    fn check_cache_for_target(&self, reader: &Reader, target: i64) -> Option<Arc<Frame>> {
+        let source_key = SourceKey {
+            path: reader.decoder.path().to_path_buf(),
+            width: reader.decoder.width(),
+            height: reader.decoder.height(),
+            index: target,
+            range: reader.decoder.options().color_range,
+            deep: reader.decoder.options().deep,
+        };
+        if let Some(frame) = self.cached_source(&source_key) {
+            Self::count(&self.counters.source_hits);
+            return Some(frame);
+        }
+        let mut treated_key = TreatedKey {
+            source: source_key,
+            width: reader.decoder.width(),
+            height: reader.decoder.height(),
+            pre: reader.decoder.options().pre_chain.clone(),
+            chain: reader.decoder.options().filter_chain.clone(),
+            baked: false,
+        };
+        if let Some(frame) = self.cached_treated(&treated_key) {
+            Self::count(&self.counters.treated_hits);
+            return Some(frame);
+        }
+        treated_key.baked = true;
+        if let Some(frame) = self.cached_treated(&treated_key) {
+            Self::count(&self.counters.treated_hits);
+            return Some(frame);
+        }
+        None
     }
 
     /// The file a request reads: its proxy when it asks for one and the
@@ -1351,6 +1442,10 @@ impl ReaderPool {
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(",");
+            if spec.is_empty() && width == source.width() && height == source.height() {
+                self.remember_treated(key, Arc::clone(&source));
+                return Ok(source);
+            }
             let frame = Arc::new(crate::treat::treat_to(&source, width, height, &spec)?);
             Self::count(&self.counters.treated);
             self.remember_treated(key, Arc::clone(&frame));
@@ -1389,6 +1484,10 @@ impl ReaderPool {
         // A still held in memory has no file to open: it is cut to the
         // level asked for, here, and kept like any frame.
         if let Some(source) = self.held_still(path) {
+            if key.width == source.width() && key.height == source.height() {
+                self.remember_source(key.clone(), Arc::clone(&source));
+                return Ok(source);
+            }
             let frame = Arc::new(crate::treat::treat_to(&source, key.width, key.height, "")?);
             self.remember_source(key.clone(), Arc::clone(&frame));
             return Ok(frame);
@@ -1470,6 +1569,11 @@ impl ReaderPool {
             return Ok(Some(frame));
         }
 
+        if let Some(frame) = self.check_cache_for_target(reader, target) {
+            remember(target, Arc::clone(&frame));
+            return Ok(Some(frame));
+        }
+
         let rate = facts.rate;
         let next = (reader.next_index != i64::MIN)
             .then_some(reader.next_index)
@@ -1482,17 +1586,22 @@ impl ReaderPool {
                         && target < n
                         && crate::is_playback_active()
                     {
+                        if let Some(frame) = self.check_cache_for_target(reader, target) {
+                            remember(target, Arc::clone(&frame));
+                            return Ok(Some(frame));
+                        }
                         log::warn!(
-                            "pull: refusing backward seek during active playback (target {} < next {}), dropping stale frame",
+                            "pull: refusing backward seek during active playback (target {} < next {}), falling back to reader.last without caching",
                             target, n
                         );
-                        return Ok(None);
+                        return Ok(reader.last.as_ref().map(|(_, f)| Arc::clone(f)));
                     }
                     let t_seek = std::time::Instant::now();
                     reader.seek(rate, target)?;
                     log::debug!("pull: seek to target {} (next was {:?}) took {:?}", target, next, t_seek.elapsed());
                 }
                 Access::Roll(ahead) if ahead > 0 => {
+                    reader.discard_before(rate, target);
                     reader.skip_before(rate, target);
                 }
                 Access::Roll(_) => {}

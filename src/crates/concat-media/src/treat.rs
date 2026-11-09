@@ -34,7 +34,7 @@ pub fn treat(frame: &Frame, chain: &str) -> Result<Frame> {
 /// chain at the same size returns a copy.
 pub fn treat_to(frame: &Frame, width: u32, height: u32, chain: &str) -> Result<Frame> {
     if chain.trim().is_empty() && width == frame.width() && height == frame.height() {
-        return Ok(frame.clone());
+        return Ok(frame.share());
     }
     let spec = if chain.trim().is_empty() {
         format!("scale={width}:{height}:flags=bilinear,format=rgba")

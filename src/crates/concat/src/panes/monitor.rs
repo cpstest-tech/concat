@@ -237,8 +237,11 @@ impl MonitorPane {
                 }
             }
             MonitorMsg::QualityChanged(index) => {
+                let quality = (index.max(0) as usize).min(2);
                 let id = studio.project().active_timeline_id.clone();
-                self.quality.insert(id, (index.max(0) as usize).min(2));
+                self.quality.insert(id, quality);
+                studio.prefs.preview_quality = Some(quality);
+                studio.prefs.save(&studio.host.dirs);
                 self.request(studio, Lane::Main);
             }
             MonitorMsg::Opened => self.failed = false,
@@ -286,12 +289,19 @@ impl MonitorPane {
     }
 
     /// The quality tier for the project's active timeline: 0 full, 1
-    /// half, 2 quarter. Half until chosen.
+    /// half, 2 quarter. Default to quarter (2) for 4K timelines, half (1) otherwise.
     pub fn quality_of(&self, project: &Project) -> usize {
         self.quality
             .get(&project.active_timeline_id)
             .copied()
-            .unwrap_or(1)
+            .unwrap_or_else(|| {
+                let (w, h) = (project.active().video.width, project.active().video.height);
+                if w >= 2160 || h >= 2160 {
+                    2
+                } else {
+                    1
+                }
+            })
     }
 
     /// The frame's size at a quality tier: the output scaled, rounded to

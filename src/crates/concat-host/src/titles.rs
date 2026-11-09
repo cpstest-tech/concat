@@ -27,7 +27,7 @@ use concat_core::shader::RevealMap;
 use concat_export::flatten::export_base;
 use concat_export::{ClipKind, ExportClip};
 use concat_project::model::{
-    ClipKind as ModelClipKind, KeyProperty, Project, ShapeKind, ShapeStyle, TextAlign, TextStyle,
+    ClipKind as ModelClipKind, CustomFont, KeyProperty, Project, ShapeKind, ShapeStyle, TextAlign, TextStyle,
 };
 use concat_text::{Align, Figure, Fonts, TitleRun, TitleStyle, WordRect};
 
@@ -77,6 +77,15 @@ struct Art {
     reveal_characters: Arc<RevealMap>,
 }
 
+/// The painting data retained for background rasterization.
+#[derive(Clone)]
+pub enum PaintingData {
+    /// Text title style.
+    Title(TextStyle),
+    /// Geometric shape style.
+    Shape(ShapeStyle),
+}
+
 /// The title painter and its cache.
 pub struct Titles {
     dir: PathBuf,
@@ -89,6 +98,9 @@ pub struct Titles {
     /// most recently asked for of the rest, so a width dragged back and
     /// forth over the same values paints each once.
     live: Mutex<LivePaintings>,
+    /// Known title/shape styles from the project by key, allowing background
+    /// lookahead workers to pre-rasterize them into `LivePaintings`.
+    known: Mutex<HashMap<u64, (PaintingData, Arc<Vec<CustomFont>>, u32, u32)>>,
 }
 
 /// The live paintings kept, in bytes of pixels, beyond the ones the
@@ -206,6 +218,7 @@ impl Titles {
             loaded_files: Mutex::new(HashSet::new()),
             memo: Mutex::new(HashMap::new()),
             live: Mutex::new(LivePaintings::new(LIVE_BYTES, LIVE_CEILING)),
+            known: Mutex::new(HashMap::new()),
         }
     }
 
@@ -224,6 +237,63 @@ impl Titles {
     /// pointer step, encoded, written and decoded again, was the lag.
     pub fn clips_live(&self, project: &Project, width: u32, height: u32) -> Vec<TitleClip> {
         self.clips_with(project, width, height, true)
+    }
+
+    /// Checks whether the live painting for `key` is already rendered and in RAM, returning its frame.
+    pub fn get_live_frame(&self, key: u64) -> Option<Arc<Frame>> {
+        self.live.lock().unwrap_or_else(|e| e.into_inner()).get(key).map(|(_, f)| f)
+    }
+
+    /// Pre-rasterizes a title by key in background if known and not already rendered,
+    /// returning the rendered frame.
+    pub fn ensure_rasterized(&self, key: u64) -> Option<Arc<Frame>> {
+        if let Some(frame) = self.get_live_frame(key) {
+            return Some(frame);
+        }
+        let (data, fonts, width, height) = {
+            let known = self.known.lock().unwrap_or_else(|e| e.into_inner());
+            known.get(&key).cloned()?
+        };
+        if let Some(frame) = self.get_live_frame(key) {
+            return Some(frame);
+        }
+        let (art, frame) = match data {
+            PaintingData::Title(ref style) => {
+                let title = title_style(style);
+                let mut font_cache = self.fonts.lock().unwrap_or_else(|e| e.into_inner());
+                let fonts = self.fonts_for_custom(&fonts, &mut font_cache);
+                let rendered = concat_text::render_frame(fonts, &title, width, height).ok()?;
+                let art = Art {
+                    block: (rendered.block_width, rendered.block_height),
+                    offset: (rendered.block_dx, rendered.block_dy),
+                    canvas: (rendered.width, rendered.height),
+                    reveal: reveal_of(&rendered.words, rendered.width, rendered.height),
+                    reveal_characters: character_reveal_of(
+                        &style.content,
+                        &rendered.words,
+                        rendered.width,
+                        rendered.height,
+                    ),
+                };
+                let frame = Arc::new(Frame::from_rgba(rendered.width, rendered.height, rendered.rgba)?);
+                (art, frame)
+            }
+            PaintingData::Shape(ref style) => {
+                let rendered = concat_text::render_shape_frame(&shape_style(style), width, height).ok()?;
+                let art = Art {
+                    block: (rendered.block_width, rendered.block_height),
+                    offset: (rendered.block_dx, rendered.block_dy),
+                    canvas: (rendered.width, rendered.height),
+                    reveal: Arc::new(RevealMap::identity()),
+                    reveal_characters: Arc::new(RevealMap::identity()),
+                };
+                let frame = Arc::new(Frame::from_rgba(rendered.width, rendered.height, rendered.rgba)?);
+                (art, frame)
+            }
+        };
+        self.memo.lock().unwrap_or_else(|e| e.into_inner()).insert(key, art.clone());
+        self.live.lock().unwrap_or_else(|e| e.into_inner()).keep(key, art, Arc::clone(&frame));
+        Some(frame)
     }
 
     fn clips_with(&self, project: &Project, width: u32, height: u32, live: bool) -> Vec<TitleClip> {
@@ -253,6 +323,14 @@ impl Titles {
                 continue;
             };
             let track = &timeline.tracks[index];
+            let key = key_of(project, painting, width, height);
+            let data = match painting {
+                Painting::Title(s) => PaintingData::Title((*s).clone()),
+                Painting::Shape(s) => PaintingData::Shape((*s).clone()),
+            };
+            if let Ok(mut known) = self.known.lock() {
+                known.insert(key, (data, Arc::clone(&project.fonts), width, height));
+            }
             let painted = if live {
                 self.painted_live(project, painting, width, height)
                     .map(|(path, art, frame)| (path, art, Some(frame)))
@@ -442,6 +520,10 @@ impl Titles {
         if let Some((art, frame)) = self.live.lock().unwrap_or_else(|e| e.into_inner()).get(key) {
             return Ok((path, art, frame));
         }
+        log::info!(
+            "titles: live rasterizing on CPU {:?} at {}x{} (key {:016x})",
+            style_text(painting), width, height, key
+        );
         let rendered = match painting {
             Painting::Title(style) => {
                 let title = title_style(style);
@@ -511,6 +593,10 @@ impl Titles {
             return Ok((png, art));
         }
 
+        log::info!(
+            "titles: rasterizing to PNG on CPU {:?} at {}x{} (key {:016x})",
+            style_text(painting), width, height, key
+        );
         let rendered = match painting {
             Painting::Title(style) => {
                 let title = title_style(style);
@@ -561,9 +647,13 @@ impl Titles {
     /// The faces, loaded once, with the project's own files added - each
     /// loaded once for the process.
     fn fonts_for<'a>(&self, project: &Project, held: &'a mut Option<Fonts>) -> &'a Fonts {
+        self.fonts_for_custom(&project.fonts, held)
+    }
+
+    fn fonts_for_custom<'a>(&self, custom: &[CustomFont], held: &'a mut Option<Fonts>) -> &'a Fonts {
         let fonts = held.get_or_insert_with(Fonts::new);
         let mut loaded = self.loaded_files.lock().unwrap_or_else(|e| e.into_inner());
-        for font in project.fonts.iter() {
+        for font in custom.iter() {
             if !font.path.is_empty() && loaded.insert(font.path.clone()) {
                 fonts.add_file(Path::new(&font.path));
             }
@@ -592,7 +682,8 @@ fn key_of(project: &Project, painting: Painting<'_>, width: u32, height: u32) ->
     // it can never collide with a title's.
     match painting {
         Painting::Title(style) => {
-            bytes.extend_from_slice(serde_json::to_string(style).unwrap_or_default().as_bytes());
+            let tidied = style.clone().tidy();
+            bytes.extend_from_slice(serde_json::to_string(&tidied).unwrap_or_default().as_bytes());
         }
         Painting::Shape(style) => {
             bytes.extend_from_slice(b"shape:");

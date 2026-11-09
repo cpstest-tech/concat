@@ -700,9 +700,46 @@ struct PooledTexture {
     /// a pass drew: what lets a frame the device already holds - a still,
     /// a title, a paused clip, a frame scrubbed back over - skip its upload.
     holds: u64,
+    /// Memory address of the source pixel buffer, length, and content signature
+    pixel_ptr: usize,
+    pixel_len: usize,
+    pixel_sig: u64,
     /// The composite it was last drawn in, counted by `prepare`: what the
     /// least recently used frame is picked by when the pool is full.
     drawn: u64,
+}
+
+#[inline]
+fn buffer_signature(pixels: &[u8]) -> u64 {
+    let len = pixels.len();
+    if len == 0 {
+        return 0;
+    }
+    let mut sig = (len as u64).wrapping_mul(0x517cc1b727220a95);
+    let sample = |offset: usize| -> u64 {
+        if offset + 8 <= len {
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&pixels[offset..offset + 8]);
+            u64::from_ne_bytes(bytes)
+        } else {
+            let mut bytes = [0u8; 8];
+            let rem = &pixels[offset..];
+            bytes[..rem.len()].copy_from_slice(rem);
+            u64::from_ne_bytes(bytes)
+        }
+    };
+    sig ^= sample(0);
+    sig = sig.rotate_left(13).wrapping_mul(0x517cc1b727220a95);
+    sig ^= sample(len / 4);
+    sig = sig.rotate_left(13).wrapping_mul(0x517cc1b727220a95);
+    sig ^= sample(len / 2);
+    sig = sig.rotate_left(13).wrapping_mul(0x517cc1b727220a95);
+    sig ^= sample((len * 3) / 4);
+    sig = sig.rotate_left(13).wrapping_mul(0x517cc1b727220a95);
+    if len > 8 {
+        sig ^= sample(len - 8);
+    }
+    sig
 }
 
 /// What the layer pool may hold, in bytes, before it overwrites a frame it
@@ -2593,19 +2630,38 @@ impl WgpuCompositor {
         let keep = frame.depth() == Depth::Sixteen
             && matches!(frame.signal(), Signal::Hlg | Signal::Pq)
             && self.output != Signal::Sdr;
-        let identity = frame.id() | if keep { 1 << 63 } else { 0 };
+        let keep_bit = if keep { 1 << 63 } else { 0 };
+        let identity = frame.id() | keep_bit;
+        let ptr = frame.pixels().as_ptr() as usize;
+        let len = frame.pixels().len();
+        let sig = buffer_signature(frame.pixels());
         let used = self.used.get(&key).copied().unwrap_or(0);
         if let Some(pool) = self.pool.get_mut(&key)
-            && let Some(found) = (used..pool.len()).find(|&slot| pool[slot].holds == identity)
+            && let Some(found) = (used..pool.len()).find(|&slot| {
+                let s = &pool[slot];
+                s.holds == identity
+                    || (s.holds != 0
+                        && (s.holds & (1 << 63)) == keep_bit
+                        && s.pixel_ptr == ptr
+                        && s.pixel_len == len
+                        && s.pixel_sig == sig)
+            })
         {
             pool.swap(used, found);
             pool[used].drawn = self.composites;
+            pool[used].holds = identity;
             *self.used.entry(key).or_insert(0) = used + 1;
             return used;
         }
         let index = self.claim(frame.width(), frame.height());
         self.uploads += 1;
-        self.pool.get_mut(&key).expect("just claimed")[index].holds = identity;
+        {
+            let slot = &mut self.pool.get_mut(&key).expect("just claimed")[index];
+            slot.holds = identity;
+            slot.pixel_ptr = ptr;
+            slot.pixel_len = len;
+            slot.pixel_sig = sig;
+        }
         // The eight bits go into this size's staging texture, and a copy
         // on the GPU brings them into the pooled texture in the working
         // format - the one place a frame's pixels change format, and where
@@ -2864,6 +2920,9 @@ impl WgpuCompositor {
                 texture,
                 bind_group,
                 holds: 0,
+                pixel_ptr: 0,
+                pixel_len: 0,
+                pixel_sig: 0,
                 drawn: 0,
             });
             let last = pool.len() - 1;
@@ -2875,6 +2934,9 @@ impl WgpuCompositor {
         let pool = self.pool.get_mut(&key).expect("claimed from above");
         // Whatever is drawn into it next is not the frame it held.
         pool[used].holds = 0;
+        pool[used].pixel_ptr = 0;
+        pool[used].pixel_len = 0;
+        pool[used].pixel_sig = 0;
         pool[used].drawn = self.composites;
         *self.used.get_mut(&key).expect("counted above") = used + 1;
         used

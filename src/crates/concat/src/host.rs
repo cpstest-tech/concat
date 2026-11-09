@@ -41,7 +41,7 @@ pub struct Host {
     /// Kokoro, and its model downloads.
     pub speech: Arc<Speech>,
     /// Titles painted to pictures, and the cache of them.
-    pub titles: concat_host::Titles,
+    pub titles: Arc<concat_host::Titles>,
     /// The cutout models, and the masks they find for the project's media.
     pub cutouts: Arc<concat_host::Cutouts>,
     /// The stabilization analysis, and the camera movement it measures.
@@ -69,8 +69,13 @@ impl Host {
     pub fn start(gpu: Option<Gpu>) -> Result<Host, String> {
         let dirs = AppDirs::locate()?;
         let _ = std::fs::create_dir_all(&dirs.config);
+        let titles = Arc::new(concat_host::Titles::new(&dirs));
+        let monitor = match gpu {
+            Some(gpu) => Monitor::with_gpu(gpu.device, gpu.queue).with_titles(Arc::clone(&titles)),
+            None => Monitor::new().with_titles(Arc::clone(&titles)),
+        };
         Ok(Host {
-            titles: concat_host::Titles::new(&dirs),
+            titles,
             cutouts: Arc::new(concat_host::Cutouts::new(&dirs.data)),
             stabilizers: Arc::new(concat_host::Stabilizers::new()),
             brushes: Arc::new(concat_host::Brushes::new(&dirs.data)),
@@ -78,10 +83,7 @@ impl Host {
             reversers: Arc::new(concat_host::Reversers::new()),
             dirs,
             playback: Playback::start(Arc::new(Events))?,
-            monitor: match gpu {
-                Some(gpu) => Monitor::with_gpu(gpu.device, gpu.queue),
-                None => Monitor::new(),
-            },
+            monitor,
             exporter: Exporter::new(),
             transcriber: Arc::new(Transcriber::new()),
             speech: Arc::new(Speech::new()),

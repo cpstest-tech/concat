@@ -404,13 +404,14 @@ mod tests {
 
     fn project() -> Project {
         let mut project = Project::default();
+        let media = std::sync::Arc::make_mut(&mut project.media);
         for (id, name, kind) in [
             ("v1", "Zebra.mp4", Kind::Video),
             ("a1", "alpha.wav", Kind::Audio),
             ("i1", "Mid.png", Kind::Image),
             ("v2", "apple.mov", Kind::Video),
         ] {
-            project.media.push(MediaItem {
+            media.push(MediaItem {
                 id: id.to_owned(),
                 name: name.to_owned(),
                 kind,
@@ -429,10 +430,10 @@ mod tests {
         assert_eq!(zebra, "v1");
         // The first item goes; its row goes with it and is never given out
         // again, so a payload in flight cannot name the wrong file.
-        project.media.remove(0);
+        std::sync::Arc::make_mut(&mut project.media).remove(0);
         bin.assign_rows(&project);
         assert!(bin.by_row(&project, 1).is_none());
-        project.media.push(MediaItem {
+        std::sync::Arc::make_mut(&mut project.media).push(MediaItem {
             id: "v3".to_owned(),
             ..MediaItem::default()
         });
@@ -474,7 +475,7 @@ mod tests {
     fn a_generated_voice_is_on_its_own_shelf_and_no_other() {
         let mut bin = MediaBin::default();
         let mut project = project();
-        project.media.push(MediaItem {
+        std::sync::Arc::make_mut(&mut project.media).push(MediaItem {
             id: "s1".to_owned(),
             name: "Voice 1.wav".to_owned(),
             kind: Kind::Audio,

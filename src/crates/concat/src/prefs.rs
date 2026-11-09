@@ -78,6 +78,8 @@ pub struct Preferences {
     /// may not take (an HDR one opened NVENC first), and the person who
     /// wants one for smoother playback turns it on in Settings.
     pub proxies: bool,
+    /// The monitor preview quality: 0 Full, 1 Half, 2 Quarter.
+    pub preview_quality: Option<usize>,
     /// Drawing in software: the window and the compositor on the
     /// platform's software rasteriser (WARP, lavapipe) instead of the GPU.
     /// Set by itself when a launch died while starting (see `safe_start`),

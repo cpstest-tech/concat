@@ -25,6 +25,28 @@
 //! owns is the order things happen in.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Performance counter for hardware downloaded frames.
+pub static DOWNLOAD_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Performance counter for filtergraph converted frames.
+pub static CONVERT_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Number of hardware downloaded frames so far.
+pub fn download_count() -> u64 {
+    DOWNLOAD_COUNT.load(Ordering::Relaxed)
+}
+
+/// Number of converted frames so far.
+pub fn convert_count() -> u64 {
+    CONVERT_COUNT.load(Ordering::Relaxed)
+}
+
+/// Resets download and convert counters.
+pub fn reset_perf_counters() {
+    DOWNLOAD_COUNT.store(0, Ordering::Relaxed);
+    CONVERT_COUNT.store(0, Ordering::Relaxed);
+}
 
 use concat_core::frame::{Frame, Signal};
 use concat_core::time::{FrameRate, Rational};
@@ -657,6 +679,9 @@ pub struct Decoder {
     /// The seek whose landing is still to be checked; see
     /// [`Decoder::retreat`].
     landing: Option<Landing>,
+    /// Whether we are currently rolling from a container seek landing,
+    /// where `short` is preserved in case the seek landed in a pause past target.
+    seeking: bool,
     /// The last picture short of a seek's target, kept back in case none
     /// lands on the target itself; see [`Decoder::next_source`].
     short: Option<Video>,
@@ -893,6 +918,7 @@ impl Decoder {
             discard_before: None,
             discard_through: None,
             landing: None,
+            seeking: false,
             short: None,
             stashed: None,
             hardware: accelerated,
@@ -1193,6 +1219,7 @@ impl Decoder {
         // wanted, and discarding up to the target would throw it away and
         // wait for the *next* keyframe, a whole group of pictures late.
         self.discard_before = (!self.options.keyframes_only).then_some(to);
+        self.seeking = !self.options.keyframes_only;
         self.discard_through = None;
         self.last_pts = None;
         self.origin = to;
@@ -1204,6 +1231,14 @@ impl Decoder {
         Ok(())
     }
 
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn options(&self) -> &DecodeOptions {
+        &self.options
+    }
+
     /// Skips frames whose presentation timestamp is strictly before `time`:
     /// during a roll-forward across many frames, non-reference B-frames
     /// before `time` are skipped in the codec (`AVDISCARD_NONREF`), hardware
@@ -1212,6 +1247,7 @@ impl Decoder {
     pub(crate) fn discard_before(&mut self, time: Rational) {
         if !self.options.keyframes_only {
             self.discard_before = Some(self.discard_before.map_or(time, |held| held.max(time)));
+            self.seeking = false;
         }
     }
 
@@ -1354,10 +1390,13 @@ impl Decoder {
             // a pause, the picture from after it, seconds early (#457).
             if let (Some(before), Some(at)) = (self.discard_before, pts) {
                 if at < before {
-                    self.short = Some(frame);
+                    if self.seeking {
+                        self.short = Some(frame);
+                    }
                     continue;
                 }
-                if at > before + self.slack()
+                if self.seeking
+                    && at > before + self.slack()
                     && let Some(short) = self.short.take()
                 {
                     self.stashed = Some(frame);
@@ -1365,6 +1404,7 @@ impl Decoder {
                     pts = stamp(&frame);
                 }
                 self.short = None;
+                self.seeking = false;
             }
             if let (Some(through), Some(pts)) = (self.discard_through, pts)
                 && pts <= through
@@ -1374,6 +1414,7 @@ impl Decoder {
             if let Some(&OnChip::Accel { device, format, .. }) = self.hardware.as_ref()
                 && frame.format() == format
             {
+                DOWNLOAD_COUNT.fetch_add(1, Ordering::Relaxed);
                 frame = match hardware::download(&frame) {
                     Ok(copy) => copy,
                     Err(error) => {
@@ -1406,6 +1447,7 @@ impl Decoder {
             }
             self.discard_before = None;
             self.discard_through = None;
+            self.seeking = false;
             self.last_pts = pts;
             return Ok(Some(Source {
                 frame,
@@ -1417,6 +1459,7 @@ impl Decoder {
 
     /// Runs one decoded picture through the graph and copies the RGBA out.
     fn convert(&mut self, source: &Video) -> Result<Frame> {
+        CONVERT_COUNT.fetch_add(1, Ordering::Relaxed);
         let key = (source.format(), source.width(), source.height());
         if self
             .graph
