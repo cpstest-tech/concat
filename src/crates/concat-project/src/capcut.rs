@@ -851,7 +851,25 @@ fn cuts(clips: &mut [(Clip, Option<(f64, String)>)]) -> Vec<(f64, f64, &'static 
 fn package_for(name: &str) -> &'static str {
     let name = name.to_lowercase();
     let has = |word: &str| name.contains(word);
-    if has("black") {
+    if has("eco dello zoom") || has("zoom echo") {
+        "concat.zoom-echo"
+    } else if has("antiorario") || has("spin ccw") {
+        "concat.spin-ccw"
+    } else if has("sfocatura") {
+        "concat.blur-dissolve"
+    } else if has("divisione ii") || has("split ii") {
+        "concat.split-h"
+    } else if has("divisione iii") || has("split iii") {
+        "concat.split-v"
+    } else if has("zoom in ritardo") || has("delayed zoom") {
+        "concat.delayed-zoom"
+    } else if has("scorrimento zoom") || has("zoom scroll") {
+        "concat.zoom-scroll"
+    } else if has("scatto a strappo") || has("rip snap") {
+        "concat.snap-tear"
+    } else if has("ricordi che scorrono") || has("flowing memories") {
+        "concat.flowing-memories"
+    } else if has("black") {
         "concat.fade-black"
     } else if has("white") || has("flash") {
         "concat.fade-white"
