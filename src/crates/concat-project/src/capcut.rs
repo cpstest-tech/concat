@@ -493,12 +493,79 @@ impl Reader<'_> {
                 | "beats"
                 | "loudnesses" => {}
                 "material_animations" => {
-                    if extra
+                    for anim in extra
                         .get("animations")
                         .and_then(Value::as_array)
-                        .is_some_and(|animations| !animations.is_empty())
+                        .into_iter()
+                        .flatten()
                     {
-                        notes.note("CapCut in/out animation, not carried");
+                        let anim_type = text(anim, "type").to_lowercase();
+                        let anim_name = text(anim, "name").to_lowercase();
+                        let res_id = text(anim, "resource_id");
+                        let raw_dur = micros(anim.get("duration"));
+                        let mapped = if res_id == "7274915008939561473"
+                            || anim_name.contains("swoosh")
+                        {
+                            Some(("in", "swoosh", if raw_dur > 0.0 { raw_dur } else { 0.7 }))
+                        } else if res_id == "7302338783930749442"
+                            || anim_name.contains("sfocatura orizzontale")
+                            || anim_name.contains("horizontal blur")
+                        {
+                            Some((
+                                "in",
+                                "horiz-blur",
+                                if raw_dur > 0.0 { raw_dur } else { 0.5 },
+                            ))
+                        } else if res_id == "7229983825080619522"
+                            || anim_name == "fumo"
+                            || anim_name == "smoke"
+                        {
+                            Some(("out", "smoke-out", if raw_dur > 0.0 { raw_dur } else { 0.9 }))
+                        } else if res_id == "7663119181289721106"
+                            || anim_name.contains("traccia del cursore")
+                            || anim_name.contains("cursor trail")
+                        {
+                            Some((
+                                "in",
+                                "cursor-trail",
+                                if raw_dur > 0.0 { raw_dur } else { 0.63 },
+                            ))
+                        } else if res_id == "7122705805966578177"
+                            || anim_type == "caption"
+                            || anim_name.contains("pop parola")
+                            || anim_name.contains("word pop")
+                        {
+                            Some((
+                                "in",
+                                "word-pop",
+                                if raw_dur > 0.0 && raw_dur <= 1.2 {
+                                    raw_dur
+                                } else {
+                                    0.5
+                                },
+                            ))
+                        } else {
+                            None
+                        };
+                        match mapped {
+                            Some(("out", preset_id, dur)) => {
+                                clip.animations.exit = Some(crate::model::ClipAnimation {
+                                    id: preset_id.to_owned(),
+                                    duration: dur.clamp(0.05, duration.max(0.05)),
+                                    intensity: 1.0,
+                                });
+                            }
+                            Some((_, preset_id, dur)) => {
+                                clip.animations.entrance = Some(crate::model::ClipAnimation {
+                                    id: preset_id.to_owned(),
+                                    duration: dur.clamp(0.05, duration.max(0.05)),
+                                    intensity: 1.0,
+                                });
+                            }
+                            None => {
+                                notes.note("CapCut in/out animation, not carried");
+                            }
+                        }
                     }
                 }
                 other => notes.note(format!("CapCut {} on a clip, not carried", plain(other))),
@@ -522,7 +589,30 @@ impl Reader<'_> {
                 }
             }
             ClipKind::Text => {
-                let style = title_of(material)?;
+                let text_mat = if list == "text_templates" {
+                    let res_id = text(material, "resource_id");
+                    let tpl_name = text(material, "name");
+                    if (res_id == "7331663868449557766" || tpl_name.contains("逐字弹出"))
+                        && clip.animations.entrance.is_none()
+                    {
+                        clip.animations.entrance = Some(crate::model::ClipAnimation {
+                            id: "word-pop".to_owned(),
+                            duration: 0.5_f64.min(duration.max(0.05)),
+                            intensity: 1.0,
+                        });
+                    }
+                    material
+                        .get("text_info_resources")
+                        .and_then(Value::as_array)
+                        .and_then(|arr| arr.first())
+                        .and_then(|res| res.get("text_material_id"))
+                        .and_then(Value::as_str)
+                        .and_then(|tid| self.materials.get(tid).map(|&(_, m)| m))
+                        .unwrap_or(material)
+                } else {
+                    material
+                };
+                let style = title_of(text_mat)?;
                 clip.name = style
                     .content
                     .lines()
@@ -763,6 +853,28 @@ fn title_of(material: &Value) -> Option<TextStyle> {
     if let Some(alpha) = number(Some(material), "global_alpha") {
         style.opacity = alpha.clamp(0.0, 1.0);
     }
+    if let Some(effect_id) = run
+        .and_then(|r| r.pointer("/effectStyle/id"))
+        .and_then(Value::as_str)
+    {
+        match effect_id {
+            "7568815810085522741" => {
+                style.color = "#ececec".to_owned();
+                style.stroke_color = "#0047ab".to_owned();
+                style.stroke_width = 0.016;
+                style.font_weight = 900.0;
+                style.shadow = true;
+            }
+            "7327617975354135042" => {
+                style.color = "#fdfbfb".to_owned();
+                style.stroke_color = "#000000".to_owned();
+                style.stroke_width = 0.010;
+                style.font_weight = 800.0;
+                style.shadow = true;
+            }
+            _ => {}
+        }
+    }
     Some(style)
 }
 
@@ -851,7 +963,13 @@ fn cuts(clips: &mut [(Clip, Option<(f64, String)>)]) -> Vec<(f64, f64, &'static 
 fn package_for(name: &str) -> &'static str {
     let name = name.to_lowercase();
     let has = |word: &str| name.contains(word);
-    if has("eco dello zoom") || has("zoom echo") {
+    if has("zoom a fette") || has("slice zoom") {
+        "concat.slice-zoom"
+    } else if has("zoom flash") {
+        "concat.zoom-flash"
+    } else if has("allungamento a sinistra") || has("stretch left") {
+        "concat.stretch-left"
+    } else if has("eco dello zoom") || has("zoom echo") {
         "concat.zoom-echo"
     } else if has("antiorario") || has("spin ccw") {
         "concat.spin-ccw"

@@ -27,7 +27,8 @@ use concat_core::shader::RevealMap;
 use concat_export::flatten::export_base;
 use concat_export::{ClipKind, ExportClip};
 use concat_project::model::{
-    ClipKind as ModelClipKind, CustomFont, KeyProperty, Project, ShapeKind, ShapeStyle, TextAlign, TextStyle,
+    ClipKind as ModelClipKind, CustomFont, KeyProperty, Project, ShapeKind, ShapeStyle, TextAlign,
+    TextStyle,
 };
 use concat_text::{Align, Figure, Fonts, TitleRun, TitleStyle, WordRect};
 
@@ -241,7 +242,11 @@ impl Titles {
 
     /// Checks whether the live painting for `key` is already rendered and in RAM, returning its frame.
     pub fn get_live_frame(&self, key: u64) -> Option<Arc<Frame>> {
-        self.live.lock().unwrap_or_else(|e| e.into_inner()).get(key).map(|(_, f)| f)
+        self.live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .map(|(_, f)| f)
     }
 
     /// Pre-rasterizes a title by key in background if known and not already rendered,
@@ -275,11 +280,16 @@ impl Titles {
                         rendered.height,
                     ),
                 };
-                let frame = Arc::new(Frame::from_rgba(rendered.width, rendered.height, rendered.rgba)?);
+                let frame = Arc::new(Frame::from_rgba(
+                    rendered.width,
+                    rendered.height,
+                    rendered.rgba,
+                )?);
                 (art, frame)
             }
             PaintingData::Shape(ref style) => {
-                let rendered = concat_text::render_shape_frame(&shape_style(style), width, height).ok()?;
+                let rendered =
+                    concat_text::render_shape_frame(&shape_style(style), width, height).ok()?;
                 let art = Art {
                     block: (rendered.block_width, rendered.block_height),
                     offset: (rendered.block_dx, rendered.block_dy),
@@ -287,12 +297,22 @@ impl Titles {
                     reveal: Arc::new(RevealMap::identity()),
                     reveal_characters: Arc::new(RevealMap::identity()),
                 };
-                let frame = Arc::new(Frame::from_rgba(rendered.width, rendered.height, rendered.rgba)?);
+                let frame = Arc::new(Frame::from_rgba(
+                    rendered.width,
+                    rendered.height,
+                    rendered.rgba,
+                )?);
                 (art, frame)
             }
         };
-        self.memo.lock().unwrap_or_else(|e| e.into_inner()).insert(key, art.clone());
-        self.live.lock().unwrap_or_else(|e| e.into_inner()).keep(key, art, Arc::clone(&frame));
+        self.memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, art.clone());
+        self.live
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keep(key, art, Arc::clone(&frame));
         Some(frame)
     }
 
@@ -418,6 +438,52 @@ impl Titles {
                         }
                         if let Some(animation) = clip
                             .animations
+                            .entrance
+                            .as_ref()
+                            .filter(|animation| animation.id == "cursor-trail")
+                        {
+                            let mut trail =
+                                concat_project::model::AppliedFilter::new("concat.cursor-trail");
+                            trail.params.insert("duration".into(), animation.duration);
+                            trail.params.insert("start".into(), 0.0);
+                            trail.params.insert(
+                                "steps".into(),
+                                f64::from(
+                                    reveal_character_count(style_text(painting)).max(1) as u32
+                                ),
+                            );
+                            effects.push(trail);
+                        }
+                        if let Some(animation) = clip.animations.entrance.as_ref() {
+                            let pkg = match animation.id.as_str() {
+                                "swoosh" => Some("concat.anim-swoosh"),
+                                "horiz-blur" => Some("concat.anim-horiz-blur"),
+                                _ => None,
+                            };
+                            if let Some(id) = pkg {
+                                let mut fx = concat_project::model::AppliedFilter::new(id);
+                                fx.params.insert("duration".into(), animation.duration);
+                                fx.params.insert("start".into(), 0.0);
+                                effects.push(fx);
+                            }
+                        }
+                        if let Some(animation) = clip
+                            .animations
+                            .exit
+                            .as_ref()
+                            .filter(|animation| animation.id == "smoke-out")
+                        {
+                            let mut fx =
+                                concat_project::model::AppliedFilter::new("concat.anim-smoke-out");
+                            fx.params.insert("duration".into(), animation.duration);
+                            fx.params.insert(
+                                "start".into(),
+                                (clip.duration - animation.duration).max(0.0),
+                            );
+                            effects.push(fx);
+                        }
+                        if let Some(animation) = clip
+                            .animations
                             .combo
                             .as_ref()
                             .filter(|animation| animation.id == "wave-loop")
@@ -480,7 +546,7 @@ impl Titles {
                                 clip.animations.entrance.as_ref().is_some_and(|animation| {
                                     matches!(
                                         animation.id.as_str(),
-                                        "character-reveal" | "typewriter"
+                                        "character-reveal" | "typewriter" | "cursor-trail"
                                     )
                                 }) || clip.animations.exit.as_ref().is_some_and(|animation| {
                                     matches!(
@@ -522,7 +588,10 @@ impl Titles {
         }
         log::info!(
             "titles: live rasterizing on CPU {:?} at {}x{} (key {:016x})",
-            style_text(painting), width, height, key
+            style_text(painting),
+            width,
+            height,
+            key
         );
         let rendered = match painting {
             Painting::Title(style) => {
@@ -595,7 +664,10 @@ impl Titles {
 
         log::info!(
             "titles: rasterizing to PNG on CPU {:?} at {}x{} (key {:016x})",
-            style_text(painting), width, height, key
+            style_text(painting),
+            width,
+            height,
+            key
         );
         let rendered = match painting {
             Painting::Title(style) => {
@@ -650,7 +722,11 @@ impl Titles {
         self.fonts_for_custom(&project.fonts, held)
     }
 
-    fn fonts_for_custom<'a>(&self, custom: &[CustomFont], held: &'a mut Option<Fonts>) -> &'a Fonts {
+    fn fonts_for_custom<'a>(
+        &self,
+        custom: &[CustomFont],
+        held: &'a mut Option<Fonts>,
+    ) -> &'a Fonts {
         let fonts = held.get_or_insert_with(Fonts::new);
         let mut loaded = self.loaded_files.lock().unwrap_or_else(|e| e.into_inner());
         for font in custom.iter() {
@@ -683,7 +759,11 @@ fn key_of(project: &Project, painting: Painting<'_>, width: u32, height: u32) ->
     match painting {
         Painting::Title(style) => {
             let tidied = style.clone().tidy();
-            bytes.extend_from_slice(serde_json::to_string(&tidied).unwrap_or_default().as_bytes());
+            bytes.extend_from_slice(
+                serde_json::to_string(&tidied)
+                    .unwrap_or_default()
+                    .as_bytes(),
+            );
         }
         Painting::Shape(style) => {
             bytes.extend_from_slice(b"shape:");

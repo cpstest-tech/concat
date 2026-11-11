@@ -128,3 +128,28 @@ Queste directory sono fuori dal checkout: l'installazione richiede permessi appr
   - Nuovi preset di aspect ratio `4:5` (Instagram/Facebook) e `3:4`.
 - **GPU Upscaler & Pipeline di Render**: Real-ESRGAN basato su compute shader WGSL nativo (`concat-vision`); hardware H.264 encode con failover automatico su software (`libx264`/`libx265`); conversione YUV GPU zero-copy e recovery dinamico in caso di GPU device loss.
 - **Robustezza Configurazione**: Salvataggio atomico di `settings.json` con parser resiliente che ripara JSON corrotti o parziali senza azzerare le preferenze dell'utente.
+
+### 10. Drag & Drop delle Transizioni dalla Libreria alla Timeline (Novembre 2026)
+- **Causa del malfunzionamento**:
+  - In `media-pane.slint`, il componente `ShelfGrid` per la scheda Transizioni (`tab == 3`) non impostava la proprietà `payload-kind: "transition"`. Di conseguenza `CatalogueCard` generava un payload vuoto e `DragArea` non avviava il trascinamento.
+  - In `lib.rs`, `Payload.is_timeline_payload` non controllava il prefisso `transition:`, rifiutando a priori il drag (`DragAction.none`).
+  - In `studio.rs`, `incoming` e `plan` non gestivano il payload transizione né il calcolo del punto di taglio (seam) più vicino tra clip adiacenti.
+  - In `place`, mancava la logica per convertire il rilascio della transizione nell'applicazione su `clip.transition_in` con selezione automatica della transizione.
+- **Risoluzione implementata**:
+  - Aggiunto `payload-kind: "transition"` a `ShelfGrid` in `media-pane.slint`.
+  - Abilitato `transition:` in `Payload.is-timeline-payload` e aggiunto il chip di anteprima cursore con icona `GLYPH_TRANSITION` (`lucide/blend`) in `chips.rs` e `lib.rs`.
+  - Implementato `Studio::nearest_cut_for_transition`: ricerca il taglio visivo più vicino sulla traccia entro un raggio tollerante (minimo 60px o 1.5 secondi) tra due clip adiacenti.
+  - In `Studio::plan`, se viene trascinata una transizione, il ghost della transizione si ancora e centra simmetricamente sul punto di taglio tra le due clip (`plan.start = cut_time - duration / 2`), bloccando la creazione su tracce nuove/vuote.
+  - In `Studio::place`, il rilascio applica la transizione sulla clip di destinazione (`clip.transition_in = Some(Transition { ... })`) con durata adattata, deseleziona i clip e seleziona direttamente la transizione per consentire immediata regolazione nell'Inspector o tramite maniglie.
+  - In `Studio::apply_transition` e `transition_cut`, migliorata la tolleranza: se una transizione è già selezionata, un click su un'altra transizione la sostituisce; se la playhead è vicina a un taglio o è selezionata la clip precedente/successiva, la transizione viene applicata senza errori.
+
+### 11. Diagnostica Animazioni & Supporto Multi-Selezione Batch (Novembre 2026)
+- **Diagnostica dei Log Runtime**:
+  - Nessun errore di rendering, panico o crash GPU nei log (`concat-20261109-205353.log`). Il pipeline matematico di animazione (`concat-core` e `concat-render`) calcola correttamente le trasformazioni (scala, offset, opacità per pop/zoom/slide/fade).
+  - Causa percepita di "non succede nulla":
+    1. **Frame Skipping all'avvio del playback**: le animazioni generate dai sottotitoli automatici (`pop`) avevano durata di soli 0.18s (~11 frame a 60 fps). L'inizializzazione del decoder NVDEC all'avvio della riproduzione ha causato un'attesa di 333 ms, portando a saltare 18 frame e superando l'intera finestra dell'animazione iniziale prima che il playback si stabilizzasse (effettuando lo scrub o impostando durate standard come 0.5s l'animazione è perfettamente visibile).
+    2. **Clip video senza animazioni**: in `Untitled project 10`, le clip video non avevano alcun blocco `animations` assegnato (era presente solo una transizione di taglio).
+- **Miglioramento Applicazione Batch Multi-Selezione**:
+  - In precedenza `Studio::clip_animation_set` in `studio.rs` considerava solo il primo elemento (`self.selection.first()`), ignorando la selezione multipla.
+  - Modificato `Studio::clip_animation_set` per operare su `self.edit_targets()` (o su tutti gli elementi di `self.selection` se vuoto), iterando su tutte le clip selezionate all'interno di `begin_echo()` e `clip_commit()`.
+  - Ora, selezionando più sottotitoli o clip e scegliendo un'animazione dall'Inspector, l'animazione viene applicata istantaneamente a tutti i clip selezionati in blocco.

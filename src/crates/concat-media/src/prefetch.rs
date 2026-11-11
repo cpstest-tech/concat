@@ -340,7 +340,11 @@ impl Prefetcher {
                     now.direction == Direction::Forward && moment.time < now.time
                 });
                 let slack = *lock(&shared.slack);
-                if !is_stale && !cursor.as_ref().is_some_and(|now| now.passed(moment.time, slack)) {
+                if !is_stale
+                    && !cursor
+                        .as_ref()
+                        .is_some_and(|now| now.passed(moment.time, slack))
+                {
                     let frames: Vec<Arc<Frame>> = moment
                         .frames
                         .iter()
@@ -514,7 +518,12 @@ mod tests {
         assert_eq!(ran.load(Ordering::SeqCst), 1, "the job after the panic ran");
         let queue = lock(&prefetcher.lane.queue);
         assert_eq!(
-            (queue.running, queue.background_running, queue.proxy_running, queue.playback_running),
+            (
+                queue.running,
+                queue.background_running,
+                queue.proxy_running,
+                queue.playback_running
+            ),
             (0, 0, 0, 0),
             "the counters came back down"
         );
@@ -825,7 +834,11 @@ mod tests {
             .map(|time| (time * fps).round() as i64)
             .collect();
         held.sort_unstable();
-        assert_eq!(held, (4..=5 + i64::from(AHEAD)).collect::<Vec<_>>(), "each held once");
+        assert_eq!(
+            held,
+            (4..=5 + i64::from(AHEAD)).collect::<Vec<_>>(),
+            "each held once"
+        );
 
         // A cursor far ahead: nothing held behind it survives, and an
         // instant queued for it that it has already passed is skipped -

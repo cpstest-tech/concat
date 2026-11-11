@@ -588,7 +588,9 @@ fn video_filter(
     } else {
         (width, height)
     };
-    parts.push(format!("scale={scale_w}:{scale_h}:flags=fast_bilinear{convert}"));
+    parts.push(format!(
+        "scale={scale_w}:{scale_h}:flags=fast_bilinear{convert}"
+    ));
     if let Some(turn) = ffi::rotation_filters(rotation) {
         parts.push(turn.to_owned());
     }
@@ -766,9 +768,7 @@ impl Decoder {
             )
         };
         let software = || Self::open_codec(path, &stream, options, Codec::Software);
-        let chosen_device = if options.hardware == HwPolicy::Preference
-            && options.keyframes_only
-        {
+        let chosen_device = if options.hardware == HwPolicy::Preference && options.keyframes_only {
             None
         } else {
             options.hardware.device_for(codec, format)
@@ -1799,7 +1799,9 @@ fn share(frame: &Video) -> Video {
 
 impl SeekableSource for Decoder {
     fn seek(&mut self, to: Rational) -> Result<()> {
-        if !self.options.keyframes_only && let Some(pos) = self.position {
+        if !self.options.keyframes_only
+            && let Some(pos) = self.position
+        {
             if to > pos && (to - pos) <= Rational::new(1, 2) {
                 self.discard_before(to);
                 return Ok(());

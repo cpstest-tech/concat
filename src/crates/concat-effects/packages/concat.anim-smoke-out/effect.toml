@@ -1,0 +1,31 @@
+format = 2
+
+[effect]
+id = "concat.anim-smoke-out"
+name = "Smoke Out"
+version = 1
+kind = "effect"
+category = "Text"
+order = 12
+description = "Wave warp, radial blur, and Gaussian dispersion for the Smoke exit animation."
+
+[[param]]
+key = "duration"
+label = "Duration"
+min = 0.05
+max = 5
+default = 0.9
+step = 0.05
+unit = "s"
+
+[[param]]
+key = "start"
+label = "Start"
+min = 0
+max = 36000
+default = 0
+step = 0.01
+unit = "s"
+
+[wgsl]
+entry = "effect.wgsl"

@@ -1,0 +1,31 @@
+format = 2
+
+[effect]
+id = "concat.anim-swoosh"
+name = "Swoosh"
+version = 1
+kind = "effect"
+category = "Text"
+order = 10
+description = "Vertical directional blur, wave warp, and exposure flash for the Swoosh entrance."
+
+[[param]]
+key = "duration"
+label = "Duration"
+min = 0.05
+max = 5
+default = 0.7
+step = 0.05
+unit = "s"
+
+[[param]]
+key = "start"
+label = "Start"
+min = 0
+max = 36000
+default = 0
+step = 0.01
+unit = "s"
+
+[wgsl]
+entry = "effect.wgsl"

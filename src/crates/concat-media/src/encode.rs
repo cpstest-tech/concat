@@ -1454,7 +1454,11 @@ impl Encoder {
             if ffmpeg::sys::av_frame_is_writable(raw) <= 0 {
                 let ret = ffmpeg::sys::av_frame_make_writable(raw);
                 if ret < 0 {
-                    return Err(ffi::fail("make_writable", &self.path, ffmpeg::Error::from(ret)));
+                    return Err(ffi::fail(
+                        "make_writable",
+                        &self.path,
+                        ffmpeg::Error::from(ret),
+                    ));
                 }
             }
         }
@@ -1706,7 +1710,11 @@ impl FrameSink for Encoder {
             if ffmpeg::sys::av_frame_is_writable(raw) <= 0 {
                 let ret = ffmpeg::sys::av_frame_make_writable(raw);
                 if ret < 0 {
-                    return Err(ffi::fail("make_writable", &self.path, ffmpeg::Error::from(ret)));
+                    return Err(ffi::fail(
+                        "make_writable",
+                        &self.path,
+                        ffmpeg::Error::from(ret),
+                    ));
                 }
             }
         }

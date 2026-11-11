@@ -125,7 +125,8 @@ fn benchmark_real_playback_120fps_to_60fps() {
         }
 
         // Pacing: simulate audio clock / Slint 59.94 fps cadence
-        let target_frame_end = benchmark_start + Duration::from_secs_f64((i + 1) as f64 * frame_seconds);
+        let target_frame_end =
+            benchmark_start + Duration::from_secs_f64((i + 1) as f64 * frame_seconds);
         let now = Instant::now();
         if now < target_frame_end {
             std::thread::sleep(target_frame_end - now);
@@ -144,8 +145,14 @@ fn benchmark_real_playback_120fps_to_60fps() {
     println!("BENCHMARK RESULTS (180 frames @ 59.94 fps):");
     println!("  Total frames requested: {}", total_frames);
     println!("  Dropped/skipped frames: {}", dropped_frames);
-    println!("  Average wait per frame: {:.3} ms", avg_wait.as_secs_f64() * 1000.0);
-    println!("  Worst wait:             {:.3} ms", worst_wait.as_secs_f64() * 1000.0);
+    println!(
+        "  Average wait per frame: {:.3} ms",
+        avg_wait.as_secs_f64() * 1000.0
+    );
+    println!(
+        "  Worst wait:             {:.3} ms",
+        worst_wait.as_secs_f64() * 1000.0
+    );
     println!("  hardware::download:     {}", downloads);
     println!("  convert (swscale):      {}", converts);
     println!("========================================================\n");
@@ -161,9 +168,5 @@ fn benchmark_real_playback_120fps_to_60fps() {
         "Expected ~180 downloads, got {}",
         downloads
     );
-    assert!(
-        converts <= 200,
-        "Expected ~180 converts, got {}",
-        converts
-    );
+    assert!(converts <= 200, "Expected ~180 converts, got {}", converts);
 }

@@ -313,6 +313,16 @@ pub enum PresetId {
     Float,
     /// Shake motion.
     Shake,
+    /// CapCut Swoosh entrance (7274915008939561473).
+    Swoosh,
+    /// CapCut Horizontal Blur entrance (7302338783930749442).
+    HorizBlur,
+    /// CapCut Smoke exit (7229983825080619522).
+    SmokeOut,
+    /// CapCut Cursor Trail entrance (7663119181289721106).
+    CursorTrail,
+    /// CapCut Elastic Word Pop (7122705805966578177).
+    WordPop,
 }
 
 impl PresetId {
@@ -334,6 +344,11 @@ impl PresetId {
             "oscillate" => Self::Oscillate,
             "float" => Self::Float,
             "shake" => Self::Shake,
+            "swoosh" => Self::Swoosh,
+            "horiz-blur" => Self::HorizBlur,
+            "smoke-out" => Self::SmokeOut,
+            "cursor-trail" => Self::CursorTrail,
+            "word-pop" => Self::WordPop,
             _ => return None,
         })
     }
@@ -472,6 +487,59 @@ pub fn evaluate_preset(
             },
             ..MotionDelta::default()
         },
+        PresetId::Swoosh => {
+            let p_pos = (progress / (8.0 / 21.0)).clamp(0.0, 1.0);
+            let e_pos = bezier_y_at_x(0.001, 0.4, 0.0, 1.0, p_pos);
+            let p_scale = (progress / (15.0 / 21.0)).clamp(0.0, 1.0);
+            let e_scale = bezier_y_at_x(0.001, 0.0, 0.58, 1.0, p_scale);
+            MotionDelta {
+                y: 0.4722 * intensity * (1.0 - e_pos),
+                scale: 1.0 + 0.03 * intensity * (1.0 - e_scale),
+                ..MotionDelta::default()
+            }
+        }
+        PresetId::HorizBlur => {
+            let e_scale = bezier_y_at_x(0.001, 0.0, 0.4, 1.0, progress);
+            MotionDelta {
+                scale: 1.0 + 0.10 * intensity * (1.0 - e_scale),
+                opacity: (progress / 0.12).clamp(0.0, 1.0),
+                ..MotionDelta::default()
+            }
+        }
+        PresetId::SmokeOut => {
+            let e_pos = bezier_y_at_x(0.5, 0.0, 0.88, 1.0, progress);
+            let e_scale = bezier_y_at_x(0.15, 0.0, 0.6, 1.0, progress);
+            let e_op = bezier_y_at_x(0.28, 0.0, 0.78, 1.0, progress);
+            MotionDelta {
+                y: -0.1667 * intensity * e_pos,
+                scale: 1.0 + 0.22 * intensity * e_scale,
+                opacity: (1.0 - e_op).clamp(0.0, 1.0),
+                ..MotionDelta::default()
+            }
+        }
+        PresetId::CursorTrail => {
+            let e_settle = bezier_y_at_x(0.16, 1.0, 0.3, 1.0, (progress / 0.35).clamp(0.0, 1.0));
+            MotionDelta {
+                scale: 1.0 - 0.05 * intensity * (1.0 - e_settle),
+                ..MotionDelta::default()
+            }
+        }
+        PresetId::WordPop => {
+            let spring = if progress <= 0.0 {
+                0.0
+            } else if progress >= 1.0 {
+                1.0
+            } else {
+                (-7.0 * progress).exp()
+                    * ((progress - 0.075) * std::f64::consts::TAU / 0.3).sin()
+                    + 1.0
+            };
+            MotionDelta {
+                scale: (1.0 + (spring - 1.0) * intensity).max(0.0),
+                opacity: (progress / 0.12).clamp(0.0, 1.0),
+                ..MotionDelta::default()
+            }
+        }
         _ => MotionDelta::default(),
     }
 }

@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.flowing-memories"
+name = "Flowing Memories"
+kind = "transition"
+category = "Slide"
+order = 23
+description = "Horizontal zoom pan with mirrored tile wrap and warm flash."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "slideright"
+fallback = "cross-fade"

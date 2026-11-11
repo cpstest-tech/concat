@@ -324,9 +324,8 @@ pub fn generate_smart_clips(
         config.model.trim()
     };
 
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    );
+    let url =
+        format!("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent");
 
     let body_bytes = serde_json::to_vec(&request_body)
         .map_err(|e| format!("Impossibile serializzare la richiesta JSON: {e}"))?;

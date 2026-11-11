@@ -1289,7 +1289,9 @@ pub fn render_on(
                 if video_result.is_err() {
                     cancel.store(true, Ordering::Relaxed);
                 }
-                let audio_res = audio_handle.join().unwrap_or_else(|_| Err("audio mixing thread panicked".into()));
+                let audio_res = audio_handle
+                    .join()
+                    .unwrap_or_else(|_| Err("audio mixing thread panicked".into()));
                 video_result?;
                 audio_res?;
                 Ok(())
@@ -3040,7 +3042,12 @@ pub fn same_topology(a: &[ExportClip], b: &[ExportClip]) -> bool {
         return false;
     }
     a.iter().zip(b.iter()).all(|(c1, c2)| {
-        c1.path == c2.path
+        // Transitions mutate track indices, clip starts/durations, animation key
+        // fractions, and held frames during `resolve_transitions`, so any clip list
+        // carrying a transition must rebuild the preview plan cleanly.
+        c1.transition.is_none()
+            && c2.transition.is_none()
+            && c1.path == c2.path
             && c1.audio_stream == c2.audio_stream
             && c1.color_range == c2.color_range
             && c1.kind == c2.kind
@@ -3056,6 +3063,22 @@ pub fn same_topology(a: &[ExportClip], b: &[ExportClip]) -> bool {
             && c1.speed_slopes == c2.speed_slopes
             && c1.filter_chain == c2.filter_chain
             && c1.transition_shapes == c2.transition_shapes
+            && c1.preset_animations == c2.preset_animations
+            && c1.effects == c2.effects
+            && (c1.fade_in - c2.fade_in).abs() < 1e-6
+            && (c1.fade_out - c2.fade_out).abs() < 1e-6
+            && (c1.video_fade_in - c2.video_fade_in).abs() < 1e-6
+            && c1.cutout == c2.cutout
+            && c1.mask_dir == c2.mask_dir
+            && c1.stabilize == c2.stabilize
+            && c1.motion_dir == c2.motion_dir
+            && c1.highlighted == c2.highlighted
+            && c1.backdrop == c2.backdrop
+            && match (&c1.reveal_map, &c2.reveal_map) {
+                (Some(r1), Some(r2)) => std::sync::Arc::ptr_eq(r1, r2),
+                (None, None) => true,
+                _ => false,
+            }
     })
 }
 

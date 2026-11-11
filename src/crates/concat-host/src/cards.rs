@@ -40,14 +40,15 @@ pub const WIDTH: u32 = 480;
 /// A card's height in pixels.
 pub const HEIGHT: u32 = 270;
 
-/// The picture every card is drawn from: a person in a bright, colourful
-/// room, so a look has skin, saturated colour, shadow and highlight to
-/// work on.
+/// The picture every card is drawn from: a black Labrador in a field.
 pub const STILL: &[u8] = include_bytes!("../assets/card-still.jpg");
+
+/// The second picture a transition's card cuts to: a white Labrador.
+pub const STILL_B: &[u8] = include_bytes!("../assets/card-still-b.jpg");
 
 /// Bumped whenever the way a card is drawn changes - the still, the moment,
 /// the title, the size, the encoding - so every kept card is drawn again.
-const EDITION: u64 = 1;
+const EDITION: u64 = 3;
 
 /// The instant a card shows, in seconds into its clip: late enough that a
 /// reveal is under way and a pulse is lit, early enough that a one-shot
@@ -247,15 +248,32 @@ impl Painter {
     ) -> Result<Painter, String> {
         let mut decoder = Decoder::open(still, &DecodeOptions::default().scaled_to(width, height))
             .map_err(|error| error.to_string())?;
-        let still = decoder
+        let still_frame = decoder
             .next_frame()
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{} holds no picture", still.display()))?;
-        let turned = turned(&still);
-        let checker = checker(still.width(), still.height());
+        let still_b_path = still.with_file_name("still-b.jpg");
+        let turned = if let Ok(mut dec_b) =
+            Decoder::open(&still_b_path, &DecodeOptions::default().scaled_to(width, height))
+            && let Ok(Some(frame_b)) = dec_b.next_frame()
+        {
+            frame_b
+        } else {
+            let tmp_b = std::env::temp_dir().join("concat-card-still-b.jpg");
+            let _ = std::fs::write(&tmp_b, STILL_B);
+            if let Ok(mut dec_b) =
+                Decoder::open(&tmp_b, &DecodeOptions::default().scaled_to(width, height))
+                && let Ok(Some(frame_b)) = dec_b.next_frame()
+            {
+                frame_b
+            } else {
+                turned(&still_frame)
+            }
+        };
+        let checker = checker(still_frame.width(), still_frame.height());
         Ok(Painter {
             compositor,
-            still: Arc::new(still),
+            still: Arc::new(still_frame),
             turned: Arc::new(turned),
             checker: Arc::new(checker),
             title: None,
@@ -499,6 +517,11 @@ pub fn still_in(dir: &Path) -> Result<PathBuf, String> {
     if std::fs::read(&path).ok().as_deref() != Some(STILL) {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
         std::fs::write(&path, STILL).map_err(|error| error.to_string())?;
+    }
+    let path_b = dir.join("still-b.jpg");
+    if std::fs::read(&path_b).ok().as_deref() != Some(STILL_B) {
+        std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+        std::fs::write(&path_b, STILL_B).map_err(|error| error.to_string())?;
     }
     Ok(path)
 }

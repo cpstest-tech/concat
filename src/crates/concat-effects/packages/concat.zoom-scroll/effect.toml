@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.zoom-scroll"
+name = "Zoom Scroll"
+kind = "transition"
+category = "Slide"
+order = 21
+description = "Vertical zoom scroll with mirrored edges and directional motion blur."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "slideup"
+fallback = "cross-fade"

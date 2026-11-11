@@ -127,7 +127,40 @@ pub fn flatten_timeline_in(
                     .crop
                     .filter(|crop| !crop.is_none())
                     .map(|crop| [crop.left, crop.top, crop.right, crop.bottom]),
-                effects: clip.video_effects.clone(),
+                effects: {
+                    let mut effects = clip.video_effects.clone();
+                    if matches!(kind, ClipKind::Video | ClipKind::Image) {
+                        if let Some(animation) = clip.animations.entrance.as_ref() {
+                            let pkg = match animation.id.as_str() {
+                                "swoosh" => Some("concat.anim-swoosh"),
+                                "horiz-blur" => Some("concat.anim-horiz-blur"),
+                                _ => None,
+                            };
+                            if let Some(id) = pkg {
+                                let mut fx = concat_project::model::AppliedFilter::new(id);
+                                fx.params.insert("duration".into(), animation.duration);
+                                fx.params.insert("start".into(), 0.0);
+                                effects.push(fx);
+                            }
+                        }
+                        if let Some(animation) = clip
+                            .animations
+                            .exit
+                            .as_ref()
+                            .filter(|animation| animation.id == "smoke-out")
+                        {
+                            let mut fx =
+                                concat_project::model::AppliedFilter::new("concat.anim-smoke-out");
+                            fx.params.insert("duration".into(), animation.duration);
+                            fx.params.insert(
+                                "start".into(),
+                                (clip.duration - animation.duration).max(0.0),
+                            );
+                            effects.push(fx);
+                        }
+                    }
+                    effects
+                },
                 scale: export_base(clip, KeyProperty::Scale),
                 offset_x: export_base(clip, KeyProperty::OffsetX),
                 offset_y: export_base(clip, KeyProperty::OffsetY),

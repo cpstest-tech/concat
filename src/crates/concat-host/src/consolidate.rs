@@ -139,8 +139,8 @@ impl Consolidation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use concat_project::model::{ClipKind, MediaKind};
+    use std::sync::Arc;
 
     fn selection() -> (Project, Vec<String>) {
         let mut project = Project::default();

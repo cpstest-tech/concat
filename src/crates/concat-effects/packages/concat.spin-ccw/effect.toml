@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.spin-ccw"
+name = "Spin Counter-Clockwise"
+kind = "transition"
+category = "Spin"
+order = 17
+description = "Full counter-clockwise 360-degree spin with radial motion blur."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "radial"
+fallback = "cross-fade"

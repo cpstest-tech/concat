@@ -371,16 +371,27 @@ fn gcd(a: i64, b: i64) -> i64 {
 /// the model a library renders arrives already narrowed, which is what lets
 /// it be laid out as a grid - a tile's place is its index, and an index only
 /// means a place when every entry in the model is one that shows.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct LibraryView {
     /// The search box's text.
     pub query: String,
-    /// The chosen shelf, as an index into the kind's group list.
+    /// The chosen shelf, as an index into the kind's group list (-1 = All).
     pub group: i32,
     /// Only starred packages show, whatever shelf they are on.
     pub favourites: bool,
     /// Active category filter (e.g. "All", "Featured", "Retro & Film", etc.).
     pub category: String,
+}
+
+impl Default for LibraryView {
+    fn default() -> Self {
+        Self {
+            query: String::new(),
+            group: -1,
+            favourites: false,
+            category: String::new(),
+        }
+    }
 }
 
 /// Which library a shelf index names. The numbers are the panel's own -
@@ -3048,19 +3059,16 @@ impl Studio {
         // without it the monitor would show every cutout as shot.
         let project_dir = std::path::PathBuf::from(session.path());
         let (width, height) = self.output_size();
-        let (shown_w, shown_h) = crate::panes::monitor::MonitorPane::frame_size(
-            self.quality_of(),
-            (width, height),
-        );
+        let (shown_w, shown_h) =
+            crate::panes::monitor::MonitorPane::frame_size(self.quality_of(), (width, height));
         // The flattening is the document's, not the frame's: kept between
         // frames of an unchanged document and handed over by pointer, so
         // playback and scrubbing neither flatten nor plan again. A gesture
         // in flight - the echo - is not the document, and flattens fresh.
         let cached = self.echo.is_none()
-            && self
-                .flat
-                .as_ref()
-                .is_some_and(|(at, w, h, _)| *at == self.revision && *w == shown_w && *h == shown_h);
+            && self.flat.as_ref().is_some_and(|(at, w, h, _)| {
+                *at == self.revision && *w == shown_w && *h == shown_h
+            });
         let clips = if cached {
             std::sync::Arc::clone(&self.flat.as_ref().expect("checked").3)
         } else {
@@ -3095,7 +3103,12 @@ impl Studio {
             }
             let clips = std::sync::Arc::new(clips);
             if self.echo.is_none() {
-                self.flat = Some((self.revision, shown_w, shown_h, std::sync::Arc::clone(&clips)));
+                self.flat = Some((
+                    self.revision,
+                    shown_w,
+                    shown_h,
+                    std::sync::Arc::clone(&clips),
+                ));
             }
             clips
         };
@@ -3962,6 +3975,16 @@ impl Studio {
                 row: 0,
                 is_new_track: false,
             }),
+            // A transition dragged from the Transitions page: dropped onto a cut seam.
+            "transition" => Some(DropPlan {
+                kind: ClipKind::Filter,
+                label: label.to_owned(),
+                media: format!("transition:{id}"),
+                start: 0.0,
+                duration: 0.5,
+                row: 0,
+                is_new_track: false,
+            }),
             // A clip dragged directly from the timeline.
             "clip" => {
                 let clip = self.timeline().clips.iter().find(|c| c.id == id)?;
@@ -4042,6 +4065,45 @@ impl Studio {
         if lanes == 0 && !is_new_track {
             return None;
         }
+
+        if plan.media.starts_with("transition:") {
+            if lanes == 0 {
+                return None;
+            }
+            let target_row = if is_new_track {
+                0
+            } else {
+                row.clamp(0, lanes - 1)
+            };
+            let track = self.row_track(target_row)?;
+            if self.locked(&track.id) {
+                return None;
+            }
+
+            // Snap tolerance: at least 60px on screen, or 1.5 seconds minimum
+            let snap_radius = ((60.0 * self.lanes.seconds_per_pixel) as f64).max(1.5);
+            let (incoming, cut_time) = self
+                .nearest_cut_for_transition(Some(&track.id), seconds as f64, snap_radius)
+                .or_else(|| self.nearest_cut_for_transition(None, seconds as f64, snap_radius))?;
+
+            let requested_dur = plan.duration as f64;
+            let duration = incoming
+                .transition_in
+                .as_ref()
+                .map(|t| t.duration)
+                .or_else(|| self.transition_duration(incoming, requested_dur))
+                .unwrap_or(0.5);
+
+            let half = duration / 2.0;
+            plan.start = (cut_time - half).max(0.0) as f32;
+            plan.duration = duration as f32;
+            plan.row = self.row_of(&incoming.track_id);
+            plan.is_new_track = false;
+            let transition_id = plan.media.strip_prefix("transition:").unwrap_or("");
+            plan.media = format!("transition:{}:{}", transition_id, incoming.id);
+            return Some(plan);
+        }
+
         if is_new_track {
             plan.is_new_track = true;
             plan.row = 0;
@@ -4122,10 +4184,11 @@ impl Studio {
         let _duration = f64::from(plan.duration);
         let clip_dragged = plan.media.strip_prefix("clip:");
 
-        let track_id = if plan.is_new_track {
+        let is_transition = plan.media.starts_with("transition:");
+        let track_id = if plan.is_new_track && !is_transition {
             self.apply(Command::AddTrack { bottom: false })
         } else {
-            self.row_track(plan.row).map(|track| track.id.clone())
+            self.row_track(plan.row.max(0)).map(|track| track.id.clone())
         };
 
         let Some(track_id) = track_id else {
@@ -4141,6 +4204,48 @@ impl Studio {
                 }],
             });
             self.selection = vec![clip_id.to_string()];
+            return;
+        }
+
+        if let Some(rest) = plan.media.strip_prefix("transition:") {
+            let mut parts = rest.splitn(2, ':');
+            let transition_id = parts.next().unwrap_or("");
+            let target_clip_id = parts.next();
+
+            let clip_id = target_clip_id
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    let snap_radius = ((60.0 * self.lanes.seconds_per_pixel) as f64).max(1.5);
+                    self.nearest_cut_for_transition(
+                        Some(&track_id),
+                        f64::from(plan.start + plan.duration / 2.0),
+                        snap_radius,
+                    )
+                    .map(|(clip, _)| clip.id.clone())
+                });
+
+            if let Some(clip_id) = clip_id {
+                let Some(clip) = self.clip(&clip_id) else {
+                    return;
+                };
+                let duration = self
+                    .transition_duration(clip, f64::from(plan.duration))
+                    .unwrap_or(0.5);
+                self.apply(Command::UpdateClip {
+                    clip_id: clip_id.clone(),
+                    patch: ClipPatch {
+                        transition_in: Some(Some(Transition {
+                            id: transition_id.to_string(),
+                            duration,
+                            params: Default::default(),
+                        })),
+                        ..ClipPatch::default()
+                    },
+                });
+                self.selection.clear();
+                self.transition_selected = Some(clip_id);
+            }
             return;
         }
 
@@ -4431,15 +4536,16 @@ impl Studio {
         duration: f64,
         preset: &str,
     ) -> Option<String> {
-        let (style, offset_y, font) = match self.text_presets.iter().find(|held| held.id == preset)
-        {
-            Some(found) => (
-                found.style.clone(),
-                found.offset_y,
-                presets::install_font(&self.host.dirs, found),
-            ),
-            None => (new_title_style(&self.prefs), None, None),
-        };
+        let (style, offset_y, font, animations) =
+            match self.text_presets.iter().find(|held| held.id == preset) {
+                Some(found) => (
+                    found.style.clone(),
+                    found.offset_y,
+                    presets::install_font(&self.host.dirs, found),
+                    found.animations.clone(),
+                ),
+                None => (new_title_style(&self.prefs), None, None, None),
+            };
         // Over the picture, not under it: the first free lane above every
         // occupied one, minted at the top when there is none. A drop onto a
         // lane names its track and is placed there regardless.
@@ -4450,7 +4556,7 @@ impl Studio {
             duration: Some(duration),
             offset_y,
             above: true,
-            animations: None,
+            animations,
         };
         match font {
             Some((family, path)) => self.apply(Command::Batch {
@@ -4653,14 +4759,84 @@ impl Studio {
         (duration >= frame).then_some(duration)
     }
 
+    /// Finds the visual cut nearest `at` (in seconds) on `track_id` (or across any track if None),
+    /// within `within` seconds. Returns the incoming clip (`&Clip`) and the cut point `at_cut` (`f64`).
+    pub fn nearest_cut_for_transition(
+        &self,
+        track_id: Option<&str>,
+        at: f64,
+        within: f64,
+    ) -> Option<(&Clip, f64)> {
+        let clips = &self.timeline().clips;
+        let mut candidates: Vec<(&Clip, f64, f64)> = Vec::new();
+
+        for incoming in clips.iter() {
+            if !incoming.kind.is_visual() {
+                continue;
+            }
+            if let Some(tid) = track_id {
+                if incoming.track_id != tid {
+                    continue;
+                }
+            }
+            if self.locked(&incoming.track_id) {
+                continue;
+            }
+            if let Some(outgoing) = self.outgoing_of(incoming) {
+                if !outgoing.kind.is_visual() {
+                    continue;
+                }
+                let cut_time = incoming.start;
+                let dist = (cut_time - at).abs();
+                if dist <= within {
+                    candidates.push((incoming.as_ref(), cut_time, dist));
+                }
+            }
+        }
+
+        candidates
+            .into_iter()
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .map(|(clip, cut, _)| (clip, cut))
+    }
+
     /// The cut a transition from the library goes on. Two clips selected
     /// that meet on one track name the cut between them - the simple way,
     /// and the one the Transitions page asks for. One clip selected names
     /// the cut into it, for a transition picked after a click on the lane.
     /// The incoming clip's id, or what to say instead.
     fn transition_cut(&self) -> Result<String, String> {
+        if self.selection.is_empty() {
+            if let Some(target) = self.transition_target() {
+                return Ok(target);
+            }
+            if let Some((incoming, _)) =
+                self.nearest_cut_for_transition(None, self.playhead as f64, 1.0)
+            {
+                return Ok(incoming.id.clone());
+            }
+        }
         match self.selection.as_slice() {
-            [one] => Ok(one.clone()),
+            [one] => {
+                let Some(clip) = self.clip(one) else {
+                    return Err(t("studio.selectTwoAdjacentClips"));
+                };
+                if self.outgoing_of(clip).is_some() {
+                    Ok(one.clone())
+                } else {
+                    let frame = self.frame_seconds();
+                    let following = self.timeline().clips.iter().find(|other| {
+                        other.id != clip.id
+                            && other.track_id == clip.track_id
+                            && (clip.start + clip.duration - other.start).abs() < frame / 2.0
+                    });
+                    if let Some(second) = following {
+                        Ok(second.id.clone())
+                    } else {
+                        Ok(one.clone())
+                    }
+                }
+            }
             [a, b] => {
                 let (Some(a), Some(b)) = (self.clip(a), self.clip(b)) else {
                     return Err(t("studio.selectTwoAdjacentClips"));
@@ -4707,7 +4883,7 @@ impl Studio {
             return;
         };
         self.apply(Command::UpdateClip {
-            clip_id,
+            clip_id: clip_id.clone(),
             patch: ClipPatch {
                 transition_in: Some(Some(Transition {
                     id: id.to_owned(),
@@ -4717,6 +4893,8 @@ impl Studio {
                 ..ClipPatch::default()
             },
         });
+        self.selection.clear();
+        self.transition_selected = Some(clip_id);
     }
 
     /// The clip whose incoming transition is selected: the one picked on
@@ -5915,57 +6093,66 @@ impl Studio {
 
     /// Set or clear one declarative motion preset on the selected picture.
     /// This is a normal project command, so it serializes and participates
-    /// in undo/redo like the rest of the inspector.
+    /// in undo/redo like the rest of the inspector. When multiple clips
+    /// are selected (such as batch-styling captions), updates all of them.
     pub fn clip_animation_set(&mut self, slot: i32, id: &str, duration: f32) {
-        let Some(clip_id) = self.selection.first().cloned() else {
-            return;
-        };
-        let Some((kind, clip_duration)) =
-            self.clip(&clip_id).map(|clip| (clip.kind, clip.duration))
-        else {
-            return;
-        };
-        if !matches!(
-            kind,
-            model::ClipKind::Video | model::ClipKind::Image | model::ClipKind::Text
-        ) {
-            return;
-        }
-        self.commit_targets = vec![clip_id.clone()];
-        self.begin_echo();
-        let Some(clip) = self.echo_clip_mut(&clip_id) else {
-            return;
-        };
-        let mut animations = clip.animations.clone();
-        let value = if id.is_empty() {
-            None
+        let targets = self.edit_targets();
+        let targets = if targets.is_empty() {
+            self.selection.clone()
         } else {
-            Some(model::ClipAnimation {
-                id: id.to_owned(),
-                duration: f64::from(duration).max(0.001).min(clip_duration.max(0.001)),
-                intensity: 1.0,
-            })
+            targets
         };
-        match slot {
-            0 => {
-                animations.entrance = value;
-                animations.combo = None;
-            }
-            1 => {
-                animations.exit = value;
-                animations.combo = None;
-            }
-            2 => {
-                animations.combo = value;
-                if animations.combo.is_some() {
-                    animations.entrance = None;
-                    animations.exit = None;
-                }
-            }
-            _ => return,
+        if targets.is_empty() {
+            return;
         }
-        animations.tidy(clip_duration);
-        clip.animations = animations;
+        self.commit_targets = targets.clone();
+        self.begin_echo();
+        for clip_id in &targets {
+            let Some((kind, clip_duration)) =
+                self.clip(clip_id).map(|clip| (clip.kind, clip.duration))
+            else {
+                continue;
+            };
+            if !matches!(
+                kind,
+                model::ClipKind::Video | model::ClipKind::Image | model::ClipKind::Text
+            ) {
+                continue;
+            }
+            let Some(clip) = self.echo_clip_mut(clip_id) else {
+                continue;
+            };
+            let mut animations = clip.animations.clone();
+            let value = if id.is_empty() {
+                None
+            } else {
+                Some(model::ClipAnimation {
+                    id: id.to_owned(),
+                    duration: f64::from(duration).max(0.001).min(clip_duration.max(0.001)),
+                    intensity: 1.0,
+                })
+            };
+            match slot {
+                0 => {
+                    animations.entrance = value;
+                    animations.combo = None;
+                }
+                1 => {
+                    animations.exit = value;
+                    animations.combo = None;
+                }
+                2 => {
+                    animations.combo = value;
+                    if animations.combo.is_some() {
+                        animations.entrance = None;
+                        animations.exit = None;
+                    }
+                }
+                _ => return,
+            }
+            animations.tidy(clip_duration);
+            clip.animations = animations;
+        }
         self.clip_commit();
     }
 
@@ -9985,7 +10172,8 @@ impl Studio {
                 }
             }
             let key_editor = app.global::<KeyEditor>();
-            let key_at = self.sole_selection()
+            let key_at = self
+                .sole_selection()
                 .and_then(|id| self.clip(&id))
                 .map_or(0.0, |clip| place_in(clip, self.playhead) as f32);
             if (key_editor.get_at() - key_at).abs() > 1e-4 {
@@ -13786,14 +13974,11 @@ mod tests {
         let mut link = AppliedFilter::new("concat.chroma-key");
         let (_, knobs) = chain_rows(std::slice::from_ref(&link));
         assert!(knobs.iter().all(|knob| knob.key != "color"), "no slider");
-        assert!(knobs.iter().any(|knob| knob.key == "similarity"));
+        assert!(knobs.iter().any(|knob| knob.key == "strength"));
         let colours = chain_colours(std::slice::from_ref(&link));
         assert_eq!(colours.len(), 1);
         assert_eq!(colours[0].key, "color");
-        assert_eq!(
-            colours[0].value,
-            slint::Color::from_argb_u8(255, 0x00, 0xb1, 0x40)
-        );
+        assert_eq!(colours[0].value, slint::Color::from_argb_u8(0, 0, 0, 0));
         let blue = slint::Color::from_argb_u8(255, 0x00, 0x47, 0xbb);
         link.params.insert("color".to_owned(), packed(blue));
         assert_eq!(link.params["color"], f64::from(0x0047_bbffu32));

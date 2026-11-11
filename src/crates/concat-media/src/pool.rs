@@ -418,9 +418,7 @@ fn plan_access(current_next: Option<i64>, target: i64) -> Access {
 
 fn plan_access_with_limit(current_next: Option<i64>, target: i64, limit: i64) -> Access {
     match current_next {
-        Some(next) if target >= next && target - next <= limit => {
-            Access::Roll(target - next)
-        }
+        Some(next) if target >= next && target - next <= limit => Access::Roll(target - next),
         _ => Access::Seek,
     }
 }
@@ -1520,7 +1518,10 @@ impl ReaderPool {
         let d_pull = begun.elapsed();
         log::info!(
             "PERF source_frame idx {}: reader {:?}, lock {:?}, pull {:?}",
-            key.index, d_reader, d_lock, d_pull
+            key.index,
+            d_reader,
+            d_lock,
+            d_pull
         );
         if passed.get() > 0
             && let Ok(mut pace) = self.pace.lock()
@@ -1592,13 +1593,19 @@ impl ReaderPool {
                         }
                         log::warn!(
                             "pull: refusing backward seek during active playback (target {} < next {}), falling back to reader.last without caching",
-                            target, n
+                            target,
+                            n
                         );
                         return Ok(reader.last.as_ref().map(|(_, f)| Arc::clone(f)));
                     }
                     let t_seek = std::time::Instant::now();
                     reader.seek(rate, target)?;
-                    log::debug!("pull: seek to target {} (next was {:?}) took {:?}", target, next, t_seek.elapsed());
+                    log::debug!(
+                        "pull: seek to target {} (next was {:?}) took {:?}",
+                        target,
+                        next,
+                        t_seek.elapsed()
+                    );
                 }
                 Access::Roll(ahead) if ahead > 0 => {
                     reader.discard_before(rate, target);
@@ -1634,7 +1641,11 @@ impl ReaderPool {
                 reader.ahead = Some((index, frame));
                 reader.next_index = target + 1;
                 remember(target, Arc::clone(&held));
-                log::info!("PERF pull: loop decoded {} frames, took {:?}", decode_count, t_loop.elapsed());
+                log::info!(
+                    "PERF pull: loop decoded {} frames, took {:?}",
+                    decode_count,
+                    t_loop.elapsed()
+                );
                 return Ok(Some(held));
             }
             reader.last = Some((index, Arc::clone(&frame)));
@@ -1644,7 +1655,12 @@ impl ReaderPool {
                 break;
             }
         }
-        log::info!("PERF pull: loop finished decoded {} frames, reached {}, took {:?}", decode_count, reached, t_loop.elapsed());
+        log::info!(
+            "PERF pull: loop finished decoded {} frames, reached {}, took {:?}",
+            decode_count,
+            reached,
+            t_loop.elapsed()
+        );
         // The stream ended short of the target: the last frame is the
         // answer, and it is remembered under the index asked for, so a
         // container that claims a frame more than it holds does not cost a

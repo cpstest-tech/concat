@@ -506,7 +506,10 @@ impl Timeline {
         }
         if track.clips.len() > 16 {
             let first_start = self.clips.get(track.clips[0]).map(|c| c.start);
-            let last_start = self.clips.get(*track.clips.last().unwrap()).map(|c| c.start);
+            let last_start = self
+                .clips
+                .get(*track.clips.last().unwrap())
+                .map(|c| c.start);
             if let (Some(first), Some(last)) = (first_start, last_start) {
                 if first <= last {
                     let idx = track.clips.partition_point(|&id| {

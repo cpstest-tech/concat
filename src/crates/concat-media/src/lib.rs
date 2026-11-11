@@ -41,8 +41,8 @@ pub fn is_playback_active() -> bool {
 }
 
 pub use decode::{
-    ColorRange, ColorSignal, DecodeOptions, Decoder, FrameSource, SeekableSource,
-    convert_count, download_count, reset_perf_counters,
+    ColorRange, ColorSignal, DecodeOptions, Decoder, FrameSource, SeekableSource, convert_count,
+    download_count, reset_perf_counters,
 };
 pub use encode::{EncodeOptions, Encoder, FrameSink, RateMode, VideoCodec, jpeg};
 pub use error::{Error, Result};

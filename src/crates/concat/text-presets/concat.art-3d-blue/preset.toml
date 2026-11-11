@@ -1,0 +1,16 @@
+id = "concat.art-3d-blue"
+name = "ART 3D Blue"
+language = "Latin"
+order = 29
+animationIn = "cursor-trail"
+animationDuration = 0.63
+
+[style]
+content = "ART 3D"
+fontFamily = "Archivo Black"
+fontWeight = 400
+fontSize = 0.11
+color = "#ececec"
+strokeColor = "#0047ab"
+strokeWidth = 0.016
+shadow = true

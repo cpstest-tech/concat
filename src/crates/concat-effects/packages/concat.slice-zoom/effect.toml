@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.slice-zoom"
+name = "Slice Zoom"
+kind = "transition"
+category = "Zoom"
+order = 23
+description = "Diagonal two-slice split revealing a zooming incoming shot with drop shadow."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "zoomin"
+fallback = "cross-fade"

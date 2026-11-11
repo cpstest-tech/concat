@@ -7,6 +7,10 @@
 use crate::format::hex_of;
 use crate::ui::ClipKind;
 
+/// The lucide/blend glyph: two intersecting discs representing a transition.
+pub const GLYPH_TRANSITION: &str =
+    "M8 9a7 7 0 1 0 14 0a7 7 0 1 0 -14 0 M2 15a7 7 0 1 0 14 0a7 7 0 1 0 -14 0";
+
 pub fn chip_glyph(kind: ClipKind) -> &'static str {
     match kind {
         // lucide/film

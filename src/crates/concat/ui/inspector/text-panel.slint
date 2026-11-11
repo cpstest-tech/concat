@@ -351,6 +351,10 @@ export component TextPanel inherits VerticalLayout {
     property <[AnimationCardData]> anims-in: [
         { id: "", label: I18n.t("common.none") },
         { id: "fade-in", label: I18n.t("clipInspector.animationFade") },
+        { id: "cursor-trail", label: I18n.t("clipInspector.animationCursorTrail") },
+        { id: "word-pop", label: I18n.t("clipInspector.animationWordPop") },
+        { id: "swoosh", label: I18n.t("clipInspector.animationSwoosh") },
+        { id: "horiz-blur", label: I18n.t("clipInspector.animationHorizBlur") },
         { id: "word-reveal", label: I18n.t("clipInspector.animationWordReveal") },
         { id: "character-reveal", label: I18n.t("clipInspector.animationCharacterReveal") },
         { id: "typewriter", label: I18n.t("clipInspector.animationTypewriter") },
@@ -365,6 +369,7 @@ export component TextPanel inherits VerticalLayout {
     property <[AnimationCardData]> anims-out: [
         { id: "", label: I18n.t("common.none") },
         { id: "fade-out", label: I18n.t("clipInspector.animationFade") },
+        { id: "smoke-out", label: I18n.t("clipInspector.animationSmokeOut") },
         { id: "word-exit", label: I18n.t("clipInspector.animationWordExit") },
         { id: "character-exit", label: I18n.t("clipInspector.animationCharacterExit") },
         { id: "typewriter-reverse", label: I18n.t("clipInspector.animationTypewriterReverse") },
@@ -434,8 +439,9 @@ export component TextPanel inherits VerticalLayout {
                         : root.anims-combo;
                     active-id: root.active-animation;
                     is-text: true;
+                    is-out: root.animation-tab == 1;
                     selected(id) => {
-                        let dur = (root.animation-tab == 2) ? 2.0 : (id == "typewriter" || id == "typewriter-reverse" ? 0.8 : (id == "word-reveal" || id == "character-reveal" || id == "word-exit" || id == "character-exit" ? 0.6 : 0.5));
+                        let dur = (root.animation-tab == 2) ? 2.0 : (id == "smoke-out" ? 0.9 : (id == "typewriter" || id == "typewriter-reverse" ? 0.8 : (id == "swoosh" ? 0.7 : (id == "cursor-trail" ? 0.63 : (id == "word-reveal" || id == "character-reveal" || id == "word-exit" || id == "character-exit" ? 0.6 : 0.5)))));
                         root.animation-set(root.animation-tab, id, dur);
                     }
                 }

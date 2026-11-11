@@ -1732,10 +1732,10 @@ pub(crate) mod wire {
     use serde::{Deserialize, Deserializer};
     use serde_json::Value;
 
-    use std::sync::Arc;
     use super::{
         Background, ClipKind, ColorSpace, MaskShape, MediaKind, ParamKey, ShapeKind, TextAlign,
     };
+    use std::sync::Arc;
 
     /// The entries of a list that parse, in order; not a list at all is
     /// an empty one.

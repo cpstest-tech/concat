@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.split-v"
+name = "Split Vertical"
+kind = "transition"
+category = "Wipe"
+order = 19
+description = "Vertical opposing split wipe with directional motion blur."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "vertopen"
+fallback = "cross-fade"

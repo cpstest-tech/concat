@@ -203,7 +203,9 @@ impl Monitor {
         spec: FrameSpec,
     ) -> Result<concat_export::PreviewSources, String> {
         let plan = self.plan_for(Arc::clone(&clips), settings, spec);
-        let playhead_frame = (spec.time * (settings.rate_num as f64) / (settings.rate_den.max(1) as f64)).round() as i64;
+        let playhead_frame = (spec.time * (settings.rate_num as f64)
+            / (settings.rate_den.max(1) as f64))
+            .round() as i64;
         self.pool.update_playhead_index(playhead_frame);
         if let Some(ref titles) = self.titles {
             for clip in clips.iter() {
@@ -349,7 +351,9 @@ impl Monitor {
         spec: FrameSpec,
     ) -> Result<(Vec<u8>, bool), String> {
         let plan = self.plan_for(Arc::clone(&clips), settings, spec);
-        let playhead_frame = (spec.time * (settings.rate_num as f64) / (settings.rate_den.max(1) as f64)).round() as i64;
+        let playhead_frame = (spec.time * (settings.rate_num as f64)
+            / (settings.rate_den.max(1) as f64))
+            .round() as i64;
         self.pool.update_playhead_index(playhead_frame);
         if let Some(ref titles) = self.titles {
             for clip in clips.iter() {
@@ -409,11 +413,14 @@ impl Monitor {
                             let titles = Arc::clone(titles);
                             let pool = Arc::clone(&self.pool);
                             let path = request.path.clone();
-                            crate::scheduler().submit(concat_media::Priority::Playback, move || {
-                                if let Some(frame) = titles.ensure_rasterized(key) {
-                                    pool.hold_still(&path, frame);
-                                }
-                            });
+                            crate::scheduler().submit(
+                                concat_media::Priority::Playback,
+                                move || {
+                                    if let Some(frame) = titles.ensure_rasterized(key) {
+                                        pool.hold_still(&path, frame);
+                                    }
+                                },
+                            );
                         }
                     }
                 }
@@ -505,7 +512,8 @@ impl Monitor {
 /// Extracts the title key from a memory title URI if matching.
 pub fn parse_title_key(path: &std::path::Path) -> Option<u64> {
     let s = path.to_str()?;
-    let key_str = s.strip_prefix("memory://titles/")
+    let key_str = s
+        .strip_prefix("memory://titles/")
         .or_else(|| s.strip_prefix("memory:/titles/"))?;
     u64::from_str_radix(key_str, 16).ok()
 }

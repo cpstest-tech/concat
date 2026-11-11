@@ -1547,10 +1547,14 @@ fn blur_rect(pixmap: &mut Pixmap, radius: usize, x0: usize, y0: usize, x1: usize
 
                 let add_idx = add_row + x * 4;
                 let sub_idx = sub_row + x * 4;
-                col_sums[col] = col_sums[col] + u32::from(scratch[add_idx]) - u32::from(scratch[sub_idx]);
-                col_sums[col + 1] = col_sums[col + 1] + u32::from(scratch[add_idx + 1]) - u32::from(scratch[sub_idx + 1]);
-                col_sums[col + 2] = col_sums[col + 2] + u32::from(scratch[add_idx + 2]) - u32::from(scratch[sub_idx + 2]);
-                col_sums[col + 3] = col_sums[col + 3] + u32::from(scratch[add_idx + 3]) - u32::from(scratch[sub_idx + 3]);
+                col_sums[col] =
+                    col_sums[col] + u32::from(scratch[add_idx]) - u32::from(scratch[sub_idx]);
+                col_sums[col + 1] = col_sums[col + 1] + u32::from(scratch[add_idx + 1])
+                    - u32::from(scratch[sub_idx + 1]);
+                col_sums[col + 2] = col_sums[col + 2] + u32::from(scratch[add_idx + 2])
+                    - u32::from(scratch[sub_idx + 2]);
+                col_sums[col + 3] = col_sums[col + 3] + u32::from(scratch[add_idx + 3])
+                    - u32::from(scratch[sub_idx + 3]);
             }
         }
     }
@@ -2022,12 +2026,19 @@ fn paint(
         let pad = (4 * shadow_blur + 4) as f32;
         let x0 = ((min_x + off_x - pad).floor() as isize).max(0) as usize;
         let y0 = ((min_y + off_y - pad).floor() as isize).max(0) as usize;
-        let x1 = ((max_x + off_x + pad).ceil() as isize).min(canvas.width() as isize).max(0) as usize;
-        let y1 = ((max_y + off_y + pad).ceil() as isize).min(canvas.height() as isize).max(0) as usize;
+        let x1 = ((max_x + off_x + pad).ceil() as isize)
+            .min(canvas.width() as isize)
+            .max(0) as usize;
+        let y1 = ((max_y + off_y + pad).ceil() as isize)
+            .min(canvas.height() as isize)
+            .max(0) as usize;
 
         let layer_w = (x1.saturating_sub(x0)) as u32;
         let layer_h = (y1.saturating_sub(y0)) as u32;
-        if layer_w > 0 && layer_h > 0 && let Some(mut layer) = Pixmap::new(layer_w, layer_h) {
+        if layer_w > 0
+            && layer_h > 0
+            && let Some(mut layer) = Pixmap::new(layer_w, layer_h)
+        {
             let local_offset = Transform::from_translate(
                 shadow_offset.0 + shift_x - x0 as f32,
                 shadow_offset.1 + shift_y - y0 as f32,

@@ -2508,6 +2508,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
             || t.starts_with("filter:")
             || t.starts_with("clip:")
             || t.starts_with("file:")
+            || t.starts_with("transition:")
     });
 
     // The picture the cursor carries, resolved through the same `incoming`
@@ -2568,13 +2569,23 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                 let Some(plan) = studio.incoming(payload.as_str()) else {
                     return;
                 };
-                let (mark, well) = match plan.kind {
-                    ClipKind::Video => (theme.get_kind_video(), theme.get_kind_video_well()),
-                    ClipKind::Audio => (theme.get_kind_audio(), theme.get_kind_audio_well()),
-                    ClipKind::Image => (theme.get_kind_image(), theme.get_kind_image_well()),
-                    ClipKind::Text => (theme.get_kind_text(), theme.get_kind_text_well()),
-                    ClipKind::Filter => (theme.get_kind_filter(), theme.get_kind_filter_well()),
-                    ClipKind::Shape => (theme.get_kind_shape(), theme.get_kind_shape_well()),
+                let is_transition = payload.starts_with("transition:");
+                let (mark, well) = if is_transition {
+                    (theme.get_accent(), theme.get_field())
+                } else {
+                    match plan.kind {
+                        ClipKind::Video => (theme.get_kind_video(), theme.get_kind_video_well()),
+                        ClipKind::Audio => (theme.get_kind_audio(), theme.get_kind_audio_well()),
+                        ClipKind::Image => (theme.get_kind_image(), theme.get_kind_image_well()),
+                        ClipKind::Text => (theme.get_kind_text(), theme.get_kind_text_well()),
+                        ClipKind::Filter => (theme.get_kind_filter(), theme.get_kind_filter_well()),
+                        ClipKind::Shape => (theme.get_kind_shape(), theme.get_kind_shape_well()),
+                    }
+                };
+                let glyph = if is_transition {
+                    chips::GLYPH_TRANSITION
+                } else {
+                    chips::chip_glyph(plan.kind)
                 };
                 let wave = studio
                     .peaks
@@ -2583,7 +2594,7 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
                     .map(|peaks| format::wave_path(peaks, 0.0, plan.duration, 32, 0.75))
                     .unwrap_or_default();
                 let document = chips::drag_chip_svg(
-                    chips::chip_glyph(plan.kind),
+                    glyph,
                     &plan.label,
                     &wave,
                     mark,

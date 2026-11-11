@@ -1819,13 +1819,31 @@ impl WgpuCompositor {
             scratch.treatment_draws.clear();
             scratch.treatment_vertices.clear();
             if let Some(index) = ground {
-                self.push_pooled(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, width, height, index, 1.0);
+                self.push_pooled(
+                    &mut scratch.treatment_draws,
+                    &mut scratch.treatment_vertices,
+                    width,
+                    height,
+                    index,
+                    1.0,
+                );
             }
             while next < plan.layers.len() && plan.layers[next].track < treatment.track {
-                self.push_layer(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, plan, &plan.layers[next]);
+                self.push_layer(
+                    &mut scratch.treatment_draws,
+                    &mut scratch.treatment_vertices,
+                    plan,
+                    &plan.layers[next],
+                );
                 next += 1;
             }
-            let below = self.render_pooled(width, height, &scratch.treatment_draws, &scratch.treatment_vertices, wgpu::Color::BLACK);
+            let below = self.render_pooled(
+                width,
+                height,
+                &scratch.treatment_draws,
+                &scratch.treatment_vertices,
+                wgpu::Color::BLACK,
+            );
             let strength = treatment.strength.clamp(0.0, 1.0);
             if strength <= 0.0 || treatment.effects.is_empty() {
                 ground = Some(below);
@@ -1837,15 +1855,42 @@ impl WgpuCompositor {
             } else {
                 scratch.treatment_draws.clear();
                 scratch.treatment_vertices.clear();
-                self.push_pooled(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, width, height, below, 1.0);
-                self.push_pooled(&mut scratch.treatment_draws, &mut scratch.treatment_vertices, width, height, treated, strength);
-                self.render_pooled(width, height, &scratch.treatment_draws, &scratch.treatment_vertices, wgpu::Color::BLACK)
+                self.push_pooled(
+                    &mut scratch.treatment_draws,
+                    &mut scratch.treatment_vertices,
+                    width,
+                    height,
+                    below,
+                    1.0,
+                );
+                self.push_pooled(
+                    &mut scratch.treatment_draws,
+                    &mut scratch.treatment_vertices,
+                    width,
+                    height,
+                    treated,
+                    strength,
+                );
+                self.render_pooled(
+                    width,
+                    height,
+                    &scratch.treatment_draws,
+                    &scratch.treatment_vertices,
+                    wgpu::Color::BLACK,
+                )
             });
         }
         scratch.draws.clear();
         scratch.vertices.clear();
         if let Some(index) = ground {
-            self.push_pooled(&mut scratch.draws, &mut scratch.vertices, width, height, index, 1.0);
+            self.push_pooled(
+                &mut scratch.draws,
+                &mut scratch.vertices,
+                width,
+                height,
+                index,
+                1.0,
+            );
         }
         for layer in &plan.layers[next..] {
             self.push_layer(&mut scratch.draws, &mut scratch.vertices, plan, layer);
@@ -2094,7 +2139,12 @@ impl WgpuCompositor {
         let (canvas, canvas_texture, canvas_view) = self.canvas(plan.width, plan.height);
         let texture = self.presentable(plan.width, plan.height);
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.encode(&canvas_view, &canvas_texture, &scratch.draws, wgpu::Color::BLACK);
+        let mut encoder = self.encode(
+            &canvas_view,
+            &canvas_texture,
+            &scratch.draws,
+            wgpu::Color::BLACK,
+        );
         self.resolve(&mut encoder, (plan.width, plan.height), canvas, &view);
         self.queue.submit([encoder.finish()]);
         self.retire();
@@ -3372,7 +3422,12 @@ impl WgpuCompositor {
         let (canvas, canvas_texture, canvas_view) = self.canvas(width, height);
         let out = self.presentable(width, height);
         let out_view = out.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self.encode(&canvas_view, &canvas_texture, &scratch.draws, wgpu::Color::BLACK);
+        let mut encoder = self.encode(
+            &canvas_view,
+            &canvas_texture,
+            &scratch.draws,
+            wgpu::Color::BLACK,
+        );
         self.resolve(&mut encoder, (width, height), canvas, &out_view);
         self.queue.submit([encoder.finish()]);
         self.retire();
@@ -3864,7 +3919,8 @@ impl WgpuCompositor {
         let (width, height, padded_row) = (target.width, target.height, target.padded_row);
 
         let slice = target.staging.slice(..);
-        self.readback_status.store(0, std::sync::atomic::Ordering::Relaxed);
+        self.readback_status
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         let status = std::sync::Arc::clone(&self.readback_status);
         slice.map_async(wgpu::MapMode::Read, move |result| {
             status.store(
@@ -3881,7 +3937,10 @@ impl WgpuCompositor {
             );
             return None;
         }
-        match self.readback_status.load(std::sync::atomic::Ordering::Acquire) {
+        match self
+            .readback_status
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
             1 => {}
             2 => {
                 log::error!("GPU readback: the frame's buffer would not map");
@@ -3952,9 +4011,15 @@ impl WgpuCompositor {
         };
         let clear = wgpu::Color::BLACK;
         let submission = match yuv {
-            Some(layout) => {
-                self.draw_planes(width, height, &scratch.draws, clear, &staging, &shape, layout)
-            }
+            Some(layout) => self.draw_planes(
+                width,
+                height,
+                &scratch.draws,
+                clear,
+                &staging,
+                &shape,
+                layout,
+            ),
             None => {
                 let padded_row = shape.planes[0].padded_row;
                 self.draw_into(width, height, &scratch.draws, clear, &staging, padded_row)

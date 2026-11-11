@@ -929,25 +929,28 @@ component CatalogueCard inherits Rectangle {
     property <bool> is-effect: root.glyph == Glyph.sparkle || root.item.glyph == Glyph.sparkle;
 
     // Hover animation progress looping continuously on hover
-    property <float> hover-t: card.has-hover ? 1.0 : 0.0;
-    animate hover-t { duration: 1.4s; easing: ease-in-out; iteration-count: -1; }
+    property <float> hover-t: 0.0;
+    property <float> sweep: root.hover-t;
+    property <float> shimmer: root.hover-t;
 
-    property <float> sweep: card.has-hover ? 1.0 : 0.0;
-    animate sweep { duration: 1.2s; easing: ease-in-out; iteration-count: -1; }
-
-    property <float> shimmer: card.has-hover ? 1.0 : 0.0;
-    animate shimmer { duration: 1.5s; easing: ease-in-out; iteration-count: -1; }
+    hover-timer := Timer {
+        interval: 25ms;
+        running: card.has-hover && (root.is-transition || root.is-effect);
+        triggered => {
+            root.hover-t = Math.mod(root.hover-t + 0.022, 1.0);
+        }
+    }
 
     // Transition category detection
-    property <bool> is-split-h: root.item.id == "concat.split-h" || root.item.id == "split-horizontal";
+    property <bool> is-split-h: root.item.id == "concat.split-h" || root.item.id == "split-horizontal" || root.item.id == "concat.slice-zoom";
     property <bool> is-split-v: root.item.id == "concat.split-v" || root.item.id == "split-vertical";
-    property <bool> is-zoom: root.item.id == "concat.zoom-echo" || root.item.id == "concat.delayed-zoom" || root.item.id == "concat.zoom-scroll" || root.item.id == "concat.zoom-transition" || root.item.id == "concat.zoom-blur-transition";
+    property <bool> is-zoom: root.item.id == "concat.zoom-echo" || root.item.id == "concat.delayed-zoom" || root.item.id == "concat.zoom-scroll" || root.item.id == "concat.zoom-transition" || root.item.id == "concat.zoom-blur-transition" || root.item.id == "concat.zoom-flash";
     property <bool> is-spin: root.item.id == "concat.spin-ccw" || root.item.id == "concat.spin" || root.item.id == "concat.swirl";
     property <bool> is-flash: root.item.id == "concat.fade-white" || root.item.id == "white-flash" || root.item.id == "concat.light-leak-flash";
     property <bool> is-black: root.item.id == "concat.fade-black" || root.item.id == "black-fade";
     property <bool> is-blur: root.item.id == "concat.blur-dissolve";
     property <bool> is-glitch: root.item.id == "concat.snap-tear" || root.item.id == "concat.glitch-transition";
-    property <bool> is-slide: root.item.id == "concat.slide" || root.item.id == "concat.push" || root.item.id == "concat.whip-pan";
+    property <bool> is-slide: root.item.id == "concat.slide" || root.item.id == "concat.push" || root.item.id == "concat.whip-pan" || root.item.id == "concat.stretch-left";
     property <bool> is-flow: root.item.id == "concat.flowing-memories" || root.item.id == "concat.light-leak-transition";
     property <bool> is-wipe: root.item.id == "concat.linear-wipe" || root.item.id == "concat.clock-wipe" || root.item.id == "concat.shape-wipe" || root.item.id == "concat.rgb-split-wipe";
 
@@ -1023,118 +1026,81 @@ component CatalogueCard inherits Rectangle {
                     tint: Theme.fg-dim;
                 }
 
-                // ── CapCut Transition Preview (Animated on hover) ──
+                // ── CapCut Transition Preview (Real photographic art + animated hover preview) ──
                 if root.is-transition: Rectangle {
                     x: 0;
                     y: 0;
                     width: parent.width;
                     height: parent.height;
                     clip: true;
+                    background: @linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
 
-                    // Scene B (Incoming shot)
-                    scene-b := Rectangle {
-                        x: 0;
+                    // Base / Incoming shot (Scene B)
+                    if root.item.art.width > 0: Image {
+                        x: card.has-hover ? (-parent.width * 0.12 * (1.0 - root.hover-t)) : 0px;
                         y: 0;
-                        width: parent.width;
-                        height: parent.height;
-                        background: @linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
+                        width: parent.width * (card.has-hover ? 1.12 : 1.0);
+                        height: parent.height * (card.has-hover ? 1.12 : 1.0);
+                        source: root.item.art;
+                        image-fit: cover;
+                    }
+
+                    // Outgoing shot (Scene A) animated during hover
+                    if !root.is-split-h && !root.is-split-v && card.has-hover && root.item.art.width > 0: Rectangle {
+                        x: root.is-slide ? (-parent.width * root.hover-t) : 0px;
+                        y: 0;
+                        width: parent.width * (root.is-zoom ? (1.0 + root.hover-t * 0.6) : (root.is-spin ? (1.0 - root.hover-t * 0.7) : 1.0));
+                        height: parent.height * (root.is-zoom ? (1.0 + root.hover-t * 0.6) : (root.is-spin ? (1.0 - root.hover-t * 0.7) : 1.0));
+                        opacity: root.is-slide ? 1.0 : (1.0 - root.hover-t);
                         clip: true;
 
-                        // Mountain landscape
-                        Rectangle {
-                            x: parent.width * 0.15;
-                            y: parent.height * 0.5;
-                            width: parent.width * 0.7;
-                            height: parent.height * 0.6;
-                            border-radius: 4px;
-                            background: #00d2fc44;
-                        }
-                        // Orb
-                        Rectangle {
-                            x: parent.width * 0.68;
-                            y: parent.height * 0.18;
-                            width: 14px;
-                            height: 14px;
-                            border-radius: 7px;
-                            background: #00f2fe;
+                        Image {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            source: root.item.art;
+                            image-fit: cover;
                         }
                     }
 
-                    // Scene A (Outgoing shot)
-                    if !root.is-split-h && !root.is-split-v: scene-a := Rectangle {
-                        x: root.is-slide && card.has-hover ? (-parent.width * root.hover-t) : 0px;
-                        y: 0;
-                        width: parent.width * (root.is-zoom && card.has-hover ? (1.0 + root.hover-t * 0.6) : (root.is-spin && card.has-hover ? (1.0 - root.hover-t * 0.7) : 1.0));
-                        height: parent.height * (root.is-zoom && card.has-hover ? (1.0 + root.hover-t * 0.6) : (root.is-spin && card.has-hover ? (1.0 - root.hover-t * 0.7) : 1.0));
-                        opacity: card.has-hover ? (
-                            root.is-slide ? 1.0
-                            : (1.0 - root.hover-t)
-                        ) : 1.0;
-                        background: @linear-gradient(135deg, #ff6b6b 0%, #ee5253 45%, #ff9f43 100%);
-                        clip: true;
-
-                        // Silhouette element
-                        Rectangle {
-                            x: parent.width * 0.2;
-                            y: parent.height * 0.45;
-                            width: parent.width * 0.6;
-                            height: parent.height * 0.6;
-                            border-radius: 4px;
-                            background: #2c2c54cc;
-                        }
-                        // Warm sun orb
-                        Rectangle {
-                            x: parent.width * 0.22;
-                            y: parent.height * 0.2;
-                            width: 14px;
-                            height: 14px;
-                            border-radius: 7px;
-                            background: #feca57;
-                        }
-                    }
-
-                    // Split Horizontal: Two halves parting
+                    // Split Horizontal: Two halves parting over incoming image
                     if root.is-split-h: Rectangle {
                         x: 0;
                         y: 0;
                         width: parent.width;
                         height: parent.height;
 
-                        // Left half
-                        Rectangle {
-                            x: card.has-hover ? (-parent.width * 0.5 * root.hover-t) : 0px;
+                        if card.has-hover && root.item.art.width > 0: Rectangle {
+                            x: -parent.width * 0.5 * root.hover-t;
                             y: 0;
                             width: parent.width * 0.5;
                             height: parent.height;
                             clip: true;
-                            background: @linear-gradient(135deg, #ff6b6b 0%, #ee5253 100%);
-                            Rectangle {
-                                x: parent.width * 0.4;
-                                y: parent.height * 0.45;
-                                width: parent.width * 1.2;
-                                height: parent.height * 0.6;
-                                border-radius: 4px;
-                                background: #2c2c54cc;
+                            Image {
+                                x: 0;
+                                y: 0;
+                                width: parent.width * 2.0;
+                                height: parent.height;
+                                source: root.item.art;
+                                image-fit: cover;
                             }
                         }
-                        // Right half
-                        Rectangle {
-                            x: parent.width * 0.5 + (card.has-hover ? (parent.width * 0.5 * root.hover-t) : 0px);
+                        if card.has-hover && root.item.art.width > 0: Rectangle {
+                            x: parent.width * 0.5 + (parent.width * 0.5 * root.hover-t);
                             y: 0;
                             width: parent.width * 0.5;
                             height: parent.height;
                             clip: true;
-                            background: @linear-gradient(135deg, #ee5253 0%, #ff9f43 100%);
-                            Rectangle {
-                                x: -parent.width * 0.6;
-                                y: parent.height * 0.45;
-                                width: parent.width * 1.2;
-                                height: parent.height * 0.6;
-                                border-radius: 4px;
-                                background: #2c2c54cc;
+                            Image {
+                                x: -parent.width;
+                                y: 0;
+                                width: parent.width * 2.0;
+                                height: parent.height;
+                                source: root.item.art;
+                                image-fit: cover;
                             }
                         }
-                        // Center split indicator line
                         if !card.has-hover: Rectangle {
                             x: parent.width * 0.5 - 1px;
                             y: 0;
@@ -1144,32 +1110,43 @@ component CatalogueCard inherits Rectangle {
                         }
                     }
 
-                    // Split Vertical: Top and bottom halves parting
+                    // Split Vertical: Top and bottom halves parting over incoming image
                     if root.is-split-v: Rectangle {
                         x: 0;
                         y: 0;
                         width: parent.width;
                         height: parent.height;
 
-                        // Top half
-                        Rectangle {
+                        if card.has-hover && root.item.art.width > 0: Rectangle {
                             x: 0;
-                            y: card.has-hover ? (-parent.height * 0.5 * root.hover-t) : 0px;
+                            y: -parent.height * 0.5 * root.hover-t;
                             width: parent.width;
                             height: parent.height * 0.5;
                             clip: true;
-                            background: @linear-gradient(180deg, #ff6b6b 0%, #ee5253 100%);
+                            Image {
+                                x: 0;
+                                y: 0;
+                                width: parent.width;
+                                height: parent.height * 2.0;
+                                source: root.item.art;
+                                image-fit: cover;
+                            }
                         }
-                        // Bottom half
-                        Rectangle {
+                        if card.has-hover && root.item.art.width > 0: Rectangle {
                             x: 0;
-                            y: parent.height * 0.5 + (card.has-hover ? (parent.height * 0.5 * root.hover-t) : 0px);
+                            y: parent.height * 0.5 + (parent.height * 0.5 * root.hover-t);
                             width: parent.width;
                             height: parent.height * 0.5;
                             clip: true;
-                            background: @linear-gradient(180deg, #ee5253 0%, #ff9f43 100%);
+                            Image {
+                                x: 0;
+                                y: -parent.height;
+                                width: parent.width;
+                                height: parent.height * 2.0;
+                                source: root.item.art;
+                                image-fit: cover;
+                            }
                         }
-                        // Center horizontal indicator line
                         if !card.has-hover: Rectangle {
                             x: 0;
                             y: parent.height * 0.5 - 1px;
@@ -1185,8 +1162,15 @@ component CatalogueCard inherits Rectangle {
                         y: 0;
                         width: parent.width;
                         height: parent.height;
-                        background: @linear-gradient(135deg, #10ac84 0%, #2e86de 100%);
                         clip: true;
+                        if root.item.art.width > 0: Image {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            source: root.item.art;
+                            image-fit: cover;
+                        }
                         Rectangle {
                             x: 0;
                             y: 0;
@@ -1202,8 +1186,15 @@ component CatalogueCard inherits Rectangle {
                         y: 0;
                         width: parent.width * root.hover-t;
                         height: parent.height;
-                        background: @linear-gradient(135deg, #10ac84 0%, #2e86de 100%);
                         clip: true;
+                        if root.item.art.width > 0: Image {
+                            x: 0;
+                            y: 0;
+                            width: tile.width;
+                            height: tile.height;
+                            source: root.item.art;
+                            image-fit: cover;
+                        }
                         Rectangle {
                             x: parent.width - 2px;
                             y: 0;
@@ -1271,11 +1262,11 @@ component CatalogueCard inherits Rectangle {
                         width: parent.width;
                         height: parent.height;
                         for strip-idx in 4: Rectangle {
-                            x: Math.sin(root.hover-t * 30.0 + strip-idx * 2.2) * 8px;
+                            x: Math.sin((root.hover-t * 30.0 + strip-idx * 2.2) * 1rad) * 8px;
                             y: strip-idx * (parent.height / 4);
                             width: parent.width;
                             height: parent.height / 4;
-                            background: (strip-idx == 1 || strip-idx == 3) ? #00f2fe33 : #ff383833;
+                            background: (strip-idx == 1 || strip-idx == 3) ? #00f2fe44 : #ff383844;
                         }
                     }
 
@@ -1319,7 +1310,7 @@ component CatalogueCard inherits Rectangle {
 
                         // Live chromatic aberration shift on hover
                         if card.has-hover: Rectangle {
-                            x: Math.sin(root.shimmer * 20.0) * 3px;
+                            x: Math.sin((root.shimmer * 20.0) * 1rad) * 3px;
                             y: 0;
                             width: parent.width;
                             height: parent.height;
@@ -1361,7 +1352,7 @@ component CatalogueCard inherits Rectangle {
                             x: (parent.width - self.width) / 2;
                             y: (parent.height - self.height) / 2;
                             glyph: Glyph.sparkle;
-                            size: card.has-hover ? 24px + Math.sin(root.shimmer * 6.283) * 4px : 22px;
+                            size: card.has-hover ? 24px + Math.sin((root.shimmer * 6.283) * 1rad) * 4px : 22px;
                             tint: card.has-hover ? #00c4cc : Theme.fg-dim;
                         }
 
@@ -1433,15 +1424,6 @@ component CatalogueCard inherits Rectangle {
                 color: (card.has-hover || root.auditioning) ? Theme.fg : Theme.fg-muted;
                 font-size: Theme.fs-sm;
                 horizontal-alignment: center;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-                y: tile.height + 4px;
-                width: root.width;
-                height: 14px;
-                text: root.item.label;
-                color: Theme.fg-muted;
-                font-size: Theme.fs-sm;
                 vertical-alignment: center;
                 overflow: elide;
             }
@@ -2309,8 +2291,10 @@ export component MediaPane inherits Rectangle {
     /// pane, which has the same problem for the same reason. A library
     /// dropped into a narrow seat would otherwise hand the card grid a
     /// negative width.
-    property <length> sidebar: Math.max(0px,
-        Math.min(root.sidebar-w, root.width / 2));
+    property <bool> has-sidebar: root.tab == 0 || root.tab == 1 || root.tab == 4 || root.tab == 7 || root.tab == 8;
+    property <length> sidebar: root.has-sidebar
+        ? Math.max(0px, Math.min(root.sidebar-w, root.width / 2))
+        : 0px;
 
     // The catalogues. The ids are written into project files, so they are
     // stable forever - pick them like you mean them. The effect artwork is a
@@ -2504,7 +2488,7 @@ export component MediaPane inherits Rectangle {
             // one carrying the longest labels — "Transitions", a category
             // name — so it was also the one most likely to be wrong for a
             // given page at a given window width.
-            HairlineSplitter {
+            if root.has-sidebar: HairlineSplitter {
                 x: root.sidebar;
                 y: 0;
                 height: parent.height;
@@ -2519,7 +2503,7 @@ export component MediaPane inherits Rectangle {
                 }
             }
 
-            Rectangle {
+            if root.has-sidebar: Rectangle {
                 // Pinned: an element with an explicit width but no x is
                 // CENTRED in its parent by Slint's default geometry, and this
                 // column spent two rounds of debugging drifting into the card
@@ -2680,118 +2664,25 @@ export component MediaPane inherits Rectangle {
                         }
                     }
 
-                    // Stickers: the one shelf there is, Shapes, so its row
-                    // is always the current one. Pictures and animated
-                    // stickers are shelves for another day.
-                    if root.tab == 2: VerticalLayout {
-                        spacing: 1px;
-                        CategoryHeading {
-                            height: 26px;
-                            title: I18n.t("mediaPane.stickers");
-                            open: root.stickers-open;
-                            toggled => { root.stickers-open = !root.stickers-open; }
-                        }
-                        if root.stickers-open: CategoryRow {
-                            height: 24px;
-                            label: I18n.t("mediaPane.shapes");
-                            current: true;
-                        }
-                    }
-
-                    if root.tab == 3: VerticalLayout {
-                        spacing: 1px;
-                        CategoryHeading {
-                            height: 26px;
-                            title: I18n.t("mediaPane.transitions");
-                            open: root.transitions-open;
-                            toggled => { root.transitions-open = !root.transitions-open; }
-                        }
-                        if root.transitions-open: VerticalLayout {
-                            spacing: 1px;
-                            CategoryRow {
-                                height: 24px;
-                                label: I18n.t("common.all");
-                                current: Library.view(3).group < 0;
-                                clicked => { Library.group-changed(3, -1); }
-                            }
-                            for label[index] in root.transition-groups: CategoryRow {
-                                height: 24px;
-                                label: label;
-                                current: Library.view(3).group == index;
-                                clicked => { Library.group-changed(3, index); }
-                            }
-                        }
-                    }
-
-                    // The picture's shelves and the sound's, from the
-                    // catalogue's own groups, on one page called Effects.
+                    // The picture's shelf and the sound's, on one page called Effects.
                     if root.tab == 4: VerticalLayout {
                         spacing: 1px;
-                        CategoryHeading {
-                            height: 26px;
-                            title: I18n.t("mediaPane.videoEffects");
-                            open: root.effects-open;
-                            toggled => { root.effects-open = !root.effects-open; }
-                        }
-                        if root.effects-open: VerticalLayout {
-                            spacing: 1px;
-                            CategoryRow {
-                                height: 24px;
-                                label: I18n.t("common.all");
-                                current: !root.audio-shelf && Library.view(1).group < 0;
-                                clicked => {
-                                    root.audio-shelf = false;
-                                    Library.group-changed(1, -1);
-                                }
-                            }
-                            for label[index] in root.effect-groups: CategoryRow {
-                                height: 24px;
-                                label: label;
-                                current: !root.audio-shelf && Library.view(1).group == index;
-                                clicked => {
-                                    root.audio-shelf = false;
-                                    Library.group-changed(1, index);
-                                }
+                        CategoryRow {
+                            height: 24px;
+                            label: I18n.t("mediaPane.videoEffects");
+                            current: !root.audio-shelf;
+                            clicked => {
+                                root.audio-shelf = false;
+                                Library.group-changed(1, -1);
                             }
                         }
-                        CategoryHeading {
-                            height: 26px;
-                            title: I18n.t("mediaPane.audioEffects");
-                            open: root.audio-open;
-                            toggled => { root.audio-open = !root.audio-open; }
-                        }
-                        if root.audio-open: VerticalLayout {
-                            spacing: 1px;
-                            for label[index] in root.audio-groups: CategoryRow {
-                                height: 24px;
-                                label: label;
-                                current: root.audio-shelf && Library.view(2).group == index;
-                                clicked => {
-                                    root.audio-shelf = true;
-                                    Library.group-changed(2, index);
-                                }
-                            }
-                        }
-                    }
-
-                    // Filters are colour looks, the way every video editor's
-                    // users understand the word. What a voice or a room does
-                    // to the sound is on the Effects page.
-                    if root.tab == 5: VerticalLayout {
-                        spacing: 1px;
-                        CategoryHeading {
-                            height: 26px;
-                            title: I18n.t("mediaPane.filters");
-                            open: root.filters-open;
-                            toggled => { root.filters-open = !root.filters-open; }
-                        }
-                        if root.filters-open: VerticalLayout {
-                            spacing: 1px;
-                            for label[index] in root.filter-groups: CategoryRow {
-                                height: 24px;
-                                label: label;
-                                current: Library.view(0).group == index;
-                                clicked => { Library.group-changed(0, index); }
+                        CategoryRow {
+                            height: 24px;
+                            label: I18n.t("mediaPane.audioEffects");
+                            current: root.audio-shelf;
+                            clicked => {
+                                root.audio-shelf = true;
+                                Library.group-changed(2, -1);
                             }
                         }
                     }
@@ -2820,27 +2711,12 @@ export component MediaPane inherits Rectangle {
                             clicked => { root.adjustments-category = 1; }
                         }
                     }
-
-                    if root.tab == 6: VerticalLayout {
-                        spacing: 1px;
-                        CategoryHeading {
-                            height: 26px;
-                            title: I18n.t("mediaPane.templates");
-                            open: root.templates-open;
-                            toggled => { root.templates-open = !root.templates-open; }
-                        }
-                        if root.templates-open: CategoryRow {
-                            height: 24px;
-                            label: I18n.t("mediaPane.myTemplates");
-                            current: true;
-                        }
-                    }
                 }
             }
 
             pages := PaneScroll {
-                x: root.sidebar + 1px;
-                width: Math.max(0px, parent.width - root.sidebar - 1px);
+                x: root.has-sidebar ? root.sidebar + 1px : 0px;
+                width: Math.max(0px, parent.width - self.x);
                 height: parent.height;
 
                 if root.tab == 0: HorizontalLayout {
@@ -3068,6 +2944,7 @@ export component MediaPane inherits Rectangle {
                     ShelfGrid {
                         entries: root.catalogue-transitions;
                         glyph: Glyph.transition;
+                        payload-kind: "transition";
                         // Transitions apply directly on single-click — no audition overlay.
                         auditions: false;
                         applied(id, label) => { root.apply-transition(id); }

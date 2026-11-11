@@ -118,7 +118,10 @@ pub fn save(
         }
         item.path = bundle_file(&assets, &item.id.clone(), &item.path.clone())?;
     }
-    for (index, font) in std::sync::Arc::make_mut(&mut project.fonts).iter_mut().enumerate() {
+    for (index, font) in std::sync::Arc::make_mut(&mut project.fonts)
+        .iter_mut()
+        .enumerate()
+    {
         font.path = bundle_file(&assets, &format!("font{index}"), &font.path.clone())?;
     }
 

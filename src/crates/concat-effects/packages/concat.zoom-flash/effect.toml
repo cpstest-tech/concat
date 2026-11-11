@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.zoom-flash"
+name = "Zoom Flash"
+kind = "transition"
+category = "Zoom"
+order = 24
+description = "Whip zoom transition with radial blur and bright exposure flash."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "zoomin"
+fallback = "cross-fade"

@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.split-h"
+name = "Split Horizontal"
+kind = "transition"
+category = "Wipe"
+order = 18
+description = "Horizontal opposing split wipe with directional motion blur."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "horzopen"
+fallback = "cross-fade"

@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.delayed-zoom"
+name = "Delayed Zoom"
+kind = "transition"
+category = "Zoom"
+order = 20
+description = "Delayed zoom cut with chromatic prism dispersion and exposure flash."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "zoomin"
+fallback = "cross-fade"

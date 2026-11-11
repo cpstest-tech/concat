@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.snap-tear"
+name = "Rip Snap"
+kind = "transition"
+category = "Glitch"
+order = 22
+description = "Whip-snap stretch and rotation cut with an exposure flash."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "fadewhite"
+fallback = "cross-fade"

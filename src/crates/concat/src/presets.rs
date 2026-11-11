@@ -70,6 +70,8 @@ pub struct TextPreset {
     /// Latin and the first two characters of its words for any other
     /// writing, so a Japanese card shows Japanese.
     pub sample: String,
+    /// Optional default clip animations carried by the preset.
+    pub animations: Option<concat_project::model::ClipAnimations>,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +91,10 @@ struct PresetFile {
     /// What the card draws; see [`TextPreset::sample`].
     #[serde(default)]
     sample: Option<String>,
+    #[serde(default)]
+    animation_in: Option<String>,
+    #[serde(default)]
+    animation_duration: Option<f64>,
     #[serde(default)]
     style: PresetStyle,
 }
@@ -266,6 +272,19 @@ fn parse(text: &str, folder: Option<&Path>) -> Option<(i64, TextPreset)> {
                     .collect()
             }
         });
+    let animations = file
+        .animation_in
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map(|id| concat_project::model::ClipAnimations {
+            entrance: Some(concat_project::model::ClipAnimation {
+                id,
+                duration: file.animation_duration.unwrap_or(0.5).clamp(0.05, 5.0),
+                intensity: 1.0,
+            }),
+            exit: None,
+            combo: None,
+        });
     Some((
         order,
         TextPreset {
@@ -280,6 +299,7 @@ fn parse(text: &str, folder: Option<&Path>) -> Option<(i64, TextPreset)> {
             font,
             language,
             sample,
+            animations,
         },
     ))
 }

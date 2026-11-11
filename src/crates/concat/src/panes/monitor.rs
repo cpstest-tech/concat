@@ -296,11 +296,7 @@ impl MonitorPane {
             .copied()
             .unwrap_or_else(|| {
                 let (w, h) = (project.active().video.width, project.active().video.height);
-                if w >= 2160 || h >= 2160 {
-                    2
-                } else {
-                    1
-                }
+                if w >= 2160 || h >= 2160 { 2 } else { 1 }
             })
     }
 

@@ -1,0 +1,14 @@
+format = 2
+
+[effect]
+id = "concat.stretch-left"
+name = "Stretch Left"
+kind = "transition"
+category = "Wipe"
+order = 25
+description = "Fast leftward whip slide with horizontal stretch and motion blur."
+
+[transition]
+entry = "effect.wgsl"
+xfade = "slideleft"
+fallback = "slideleft"

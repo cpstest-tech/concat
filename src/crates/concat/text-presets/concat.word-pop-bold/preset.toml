@@ -1,0 +1,17 @@
+id = "concat.word-pop-bold"
+name = "Word Pop Bold"
+language = "Latin"
+order = 30
+offsetY = 0.28
+animationIn = "word-pop"
+animationDuration = 0.5
+
+[style]
+content = "POP WORD"
+fontFamily = "Hanken Grotesk"
+fontWeight = 800
+fontSize = 0.085
+color = "#fdfbfb"
+strokeColor = "#000000"
+strokeWidth = 0.010
+shadow = true
